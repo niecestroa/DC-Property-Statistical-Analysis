@@ -1,0 +1,459 @@
+---
+title: "Bayesian Project Code"
+author: "Aaron Niecestro"
+date: "April 24, 2024"
+output:
+  word_document: default
+  pdf_document:
+    latex_engine: xelatex 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+Warning - documents take at least 6 hours to finish running and does not knit
+
+## Packages
+
+```{r packages, warnings=FALSE, message=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(rstan)
+library(bayesreg)
+```
+
+## Raw Data
+
+```{r Raw Data}
+DC_Properties <- read.csv("~/UTH Bayesian Data Analysis/PH1965 Project/DC_Properties.csv")
+DC_Properties <- data.frame(DC_Properties) # making sure that this is data frame dataset
+summary(DC_Properties)
+dim(DC_Properties)
+```
+
+## Data Cleaning
+
+```{r Cleaning Data}
+DC_Properties[is.na(DC_Properties)] <- 0 # setting all NA to 0 
+# makes data easier to clean and work with
+
+## Final Cleaned Dataset
+
+select <- dplyr::select
+
+DC_Properties_tidy <- DC_Properties %>%
+  select(X.1, PRICE, BATHRM, HF_BATHRM, HEAT, AC, ROOMS, BEDRM, AYB, YR_RMDL, EYB, STORIES, QUALIFIED, GRADE, CNDTN, KITCHENS, FIREPLACES, WARD, QUADRANT, LATITUDE, LONGITUDE) %>%
+  mutate(PRICE = as.numeric(PRICE),
+         BATHRM = as.numeric(BATHRM),
+         HF_BATHRM = as.numeric(HF_BATHRM),
+         ROOMS = as.numeric(ROOMS),
+         BEDRM = as.numeric(BEDRM),
+         AYB = as.numeric(AYB),
+         EYB = as.numeric(EYB),
+         STORIES = as.numeric(STORIES),
+         KITCHENS = as.numeric(KITCHENS),
+         FIREPLACES = as.numeric(FIREPLACES),
+         LATITUDE = as.numeric(LATITUDE),
+         LONGITUDE = as.numeric(LONGITUDE),
+         HEAT = as.character(HEAT), # made character columns here to filter and clean data better
+         AC = as.character(AC),
+         QUALIFIED = as.character(QUALIFIED),
+         GRADE = as.character(GRADE),
+         CNDTN = as.character(CNDTN)) %>%
+  filter(CNDTN != "",
+         CNDTN != "Default",
+         CNDTN != "Poor",
+         GRADE != " No Data",
+         GRADE != "",
+         HEAT != "No Data", # lose ~50,000 observations of the data by here
+         PRICE > 10000 & PRICE < 10000000,
+         FIREPLACES < 10,
+         KITCHENS <= 10,
+         ROOMS <= 40,
+         BEDRM <= 20,
+         STORIES <= 10,
+         LATITUDE != 0,
+         LONGITUDE != 0) %>% # Up to here, I lose roughly 100K observations
+  mutate(AYB.age = AYB, # making new quantitative
+         AYB.age = 2019 - AYB.age,
+         AYB.age = ifelse(AYB == 2019, 0, AYB.age),
+         EYB.age = as.numeric(EYB),
+         EYB.age = 2019 - EYB.age,
+         EYB.age = ifelse(EYB == 2019, 0, EYB.age),
+         REMODEL.age = as.character(YR_RMDL),
+         REMODEL.age = ifelse(REMODEL.age == "0", 0, REMODEL.age),
+         REMODEL.age = ifelse(REMODEL.age == "20", 0, REMODEL.age),
+         REMODEL.age = as.numeric(REMODEL.age),
+         REMODEL.age = 2019 - REMODEL.age,
+         REMODEL.age = ifelse(REMODEL.age == 2019, 0, REMODEL.age),
+         GRADE = ifelse(GRADE == "Exceptional-A", "Exceptional", GRADE), # fixing Grade
+         GRADE = ifelse(GRADE == "Exceptional-B", "Exceptional", GRADE),
+         GRADE = ifelse(GRADE == "Exceptional-C", "Exceptional", GRADE),
+         GRADE = ifelse(GRADE == "Exceptional-D", "Exceptional", GRADE),
+         QUALIFIED_2 = QUALIFIED, # making new Qualified Variable
+         QUALIFIED_2 = ifelse(QUALIFIED == "Q", 1, 0),
+         QUALIFIED_2 = as.factor(QUALIFIED_2),
+         AC = ifelse(AC == "0", "N", AC),
+         GRADE = as.factor(GRADE), # fixed certain variables back to factors
+         HEAT = as.factor(HEAT), 
+         AC = as.factor(AC),
+         WARD = as.factor(WARD),
+         CONDITION = as.factor(CNDTN),
+         QUALIFIED = as.factor(QUALIFIED),
+         AYB.age = as.numeric(AYB.age),
+         EYB.age = as.numeric(EYB.age),
+         REMODEL.age = as.numeric(REMODEL.age))%>%
+  select(-CNDTN, -AYB, -YR_RMDL, -EYB) # select again 
+
+DC_Final <- na.omit(DC_Properties_tidy)
+
+DC_Final <- DC_Final %>%
+  filter(AYB.age < 2000) %>%
+  mutate(QUALIFIED_2 = as.numeric(QUALIFIED_2) -1,
+         PRICE_100K = PRICE/100000,
+         BATHRM = BATHRM + HF_BATHRM*.5,
+         BATHRM = as.numeric(BATHRM)) %>%
+  select(PRICE, PRICE_100K, BATHRM, ROOMS, BEDRM, STORIES, KITCHENS, FIREPLACES, LATITUDE,
+         LONGITUDE, AYB.age, EYB.age, REMODEL.age, HEAT, AC, QUALIFIED_2, GRADE, WARD,
+         QUADRANT, CONDITION)
+
+set.seed(10000000)
+
+DC_Final <- sample_n(DC_Final, length(DC_Final$PRICE_100K), replace = TRUE) # want the datasets to be even 
+# I lost one observation by doing this
+
+dim(DC_Final)
+summary(DC_Final)
+
+# kitchens needs NA switched to 0
+# stories has a lot of NAs = 52305, mutate NA or "" to 0
+# Price also has a lot of NA = 60741, mutate NA to 0
+```
+
+```{r select columns}
+# Select the right columns
+
+DC_data <- DC_Final %>%
+  select(PRICE_100K, BATHRM, ROOMS, BEDRM, STORIES, KITCHENS, FIREPLACES, EYB.age, REMODEL.age, QUALIFIED_2, AC) %>%
+  filter(REMODEL.age < 100) %>%
+  filter(EYB.age < 100) %>%
+  mutate(QUALIFIED_2=as.numeric(QUALIFIED_2)) %>%
+  mutate(AC=as.numeric(AC)-1) %>%
+  na.omit()
+
+summary(DC_data)
+dim(DC_data)
+# lost four observations clearning further
+```
+
+```{r}
+DC_data %>%
+  filter(QUALIFIED_2 == 0) %>%
+  summarise(sd_var1 = sd(PRICE_100K, na.rm=TRUE),
+            sd_var2 = sd(BATHRM, na.rm=TRUE),
+            sd_var3 = sd(ROOMS, na.rm=TRUE),
+            sd_var4 = sd(BEDRM, na.rm=TRUE),
+            sd_var5 = sd(STORIES, na.rm=TRUE),
+            sd_var6 = sd(KITCHENS, na.rm=TRUE),
+            sd_var7 = sd(FIREPLACES, na.rm=TRUE),
+            sd_var8 = sd(EYB.age, na.rm=TRUE),
+            sd_var9 = sd(REMODEL.age, na.rm=TRUE))
+
+DC_data %>%
+  filter(QUALIFIED_2 == 1) %>%
+  summarise(sd_var1 = sd(PRICE_100K, na.rm=TRUE),
+            sd_var2 = sd(BATHRM, na.rm=TRUE),
+            sd_var3 = sd(ROOMS, na.rm=TRUE),
+            sd_var4 = sd(BEDRM, na.rm=TRUE),
+            sd_var5 = sd(STORIES, na.rm=TRUE),
+            sd_var6 = sd(KITCHENS, na.rm=TRUE),
+            sd_var7 = sd(FIREPLACES, na.rm=TRUE),
+            sd_var8 = sd(EYB.age, na.rm=TRUE),
+            sd_var9 = sd(REMODEL.age, na.rm=TRUE))
+```
+
+
+```{r spilt data}
+set.seed(400)
+train_indices <- sample(1:nrow(DC_data), 0.8*nrow(DC_data)) # 80% for training
+train_data <- DC_data[train_indices, ]
+test_data <- DC_data[-train_indices, ]
+dim(train_data)
+```
+
+### Finding variance for non-informative prior
+
+```{r distribution variance}
+# highest variance might used for the variance of the normal distribution
+var(train_data$PRICE_100K) 
+var(train_data$BATHRM) 
+var(train_data$BEDRM)
+var(train_data$ROOMS) 
+var(train_data$STORIES) 
+var(train_data$KITCHENS)
+var(train_data$FIREPLACES)
+var(train_data$EYB.age) 
+var(train_data$REMODEL.age)
+```
+
+```{r}
+(var(train_data$PRICE_100K) + var(train_data$BATHRM) + var(train_data$BEDRM) + var(train_data$ROOMS) + var(train_data$STORIES) + var(train_data$KITCHENS) + var(train_data$FIREPLACES) ) /7
+```
+
+### Perform Variable Selection
+
+#### First time variable selection
+
+#### Regularization that shows which variables will go to 0
+
+This will take a very long time to run. It will take at least one hour to finish running just this part alone.
+
+```{r, chache=TRUE}
+# Fit a model using logistic regression using ridge for 2,000 samples
+rv <- bayesreg(as.factor(QUALIFIED_2) ~ PRICE_100K + BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + EYB.age + REMODEL.age + as.factor(AC), train_data, model = "logistic", prior = "ridge", n.samples = 2000)
+  
+# Summarise, sorting variables by their ranking importance
+rv.s <- summary(rv,sort.rank=TRUE)
+
+# Based on ridge regression results below, REMODEL.age is the least important for the final model I wish to build below
+```
+
+```{r, chache=TRUE}
+# Fit a model using logistic regression using horseshoe for 2,000 samples
+rv2 <- bayesreg(as.factor(QUALIFIED_2) ~ PRICE_100K + BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + EYB.age + REMODEL.age + as.factor(AC), train_data, model = "logistic", prior = "horseshoe", n.samples = 2000)
+  
+# Summarise, sorting variables by their ranking importance
+rv.s2 <- summary(rv2,sort.rank=TRUE)
+
+# Based on lasso regression results below, REMODEL.age is not necessary or important for the final model I wish to build below
+```
+
+```{r, chache=TRUE}
+# Fit a model using logistic regression using horseshoe and ridge for 2,000 samples
+rv3 <- bayesreg(as.factor(QUALIFIED_2) ~ PRICE_100K + BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + EYB.age + REMODEL.age + as.factor(AC), train_data, model = "logistic", prior = "horseshoe+", n.samples = 2000)
+  
+# Summarise, sorting variables by their ranking importance
+rv.s3 <- summary(rv3,sort.rank=TRUE)
+
+# Based on lasso regression results below, REMODEL.age is not necessary or important for the final model I wish to build below
+```
+
+#### Actual variable selection using lasso regression
+
+```{r, chache=TRUE}
+# Fit a model using logistic regression using lasso for 2,000 samples
+rv4 <- bayesreg(as.factor(QUALIFIED_2) ~ PRICE_100K + BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + EYB.age + REMODEL.age + as.factor(AC), train_data, model = "logistic", prior = "lasso", n.samples = 2000)
+  
+# Summarise, sorting variables by their ranking importance
+rv.s4 <- summary(rv4,sort.rank=TRUE)
+
+# Based on lasso regression results below, REMODEL.age is not necessary or important for the final model I wish to build below
+```
+
+#### Second time variable selection. 
+
+Goal to have all stars in the model in rank, lower WAIC, and higher Pseudo R2 output if possible
+
+```{r, chache=TRUE}
+library(bayesreg)
+
+# Fit a model using logistic regression using ridge for 2,000 samples
+rv1.1 <- bayesreg(as.factor(QUALIFIED_2) ~ PRICE_100K + BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + EYB.age + as.factor(AC), train_data, model = "logistic", prior = "ridge", n.samples = 2000)
+  
+# Summarise, sorting variables by their ranking importance
+rv.s1.1 <- summary(rv1.1,sort.rank=TRUE)
+
+# Based on ridge regression results below, REMODEL.age is the least important for the final model I wish to build below
+```
+
+```{r, chache=TRUE}
+# Fit a model using logistic regression using horseshoe for 2,000 samples
+rv2.1 <- bayesreg(as.factor(QUALIFIED_2) ~ PRICE_100K + BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + EYB.age + REMODEL.age + as.factor(AC), train_data, model = "logistic", prior = "horseshoe", n.samples = 2000)
+  
+# Summarise, sorting variables by their ranking importance
+rv.s2.1 <- summary(rv2.1,sort.rank=TRUE)
+
+# Based on lasso regression results below, REMODEL.age is not necessary or important for the final model I wish to build below
+```
+
+```{r, chache=TRUE}
+# Fit a model using logistic regression using horseshoe and ridge for 2,000 samples
+rv3.1 <- bayesreg(as.factor(QUALIFIED_2) ~ PRICE_100K + BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + EYB.age + REMODEL.age + as.factor(AC), train_data, model = "logistic", prior = "horseshoe+", n.samples = 2000)
+  
+# Summarise, sorting variables by their ranking importance
+rv.s3.1 <- summary(rv3.1,sort.rank=TRUE)
+
+# Based on lasso regression results below, REMODEL.age is not necessary or important for the final model I wish to build below
+```
+
+#### Actual variable selection using lasso regression
+
+```{r, chache=TRUE}
+# Fit a model using logistic regression using lasso for 2,000 samples
+rv4.1 <- bayesreg(as.factor(QUALIFIED_2) ~ PRICE_100K + BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + EYB.age + as.factor(AC), train_data, model = "logistic", prior = "lasso", n.samples = 2000)
+  
+# Summarise, sorting variables by their ranking importance
+rv.s4.1 <- summary(rv4.1,sort.rank=TRUE)
+
+# Based on lasso regression results below, BATHRM is not important enough for the model now
+```
+
+```{r, chache=TRUE}
+# Fit a model using logistic regression using lasso for 2,000 samples
+rv4.2 <- bayesreg(as.factor(QUALIFIED_2) ~ PRICE_100K + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + EYB.age + as.factor(AC), train_data, model = "logistic", prior = "lasso", n.samples = 2000)
+  
+# Summarise, sorting variables by their ranking importance
+rv.s4.2 <- summary(rv4.2,sort.rank=TRUE)
+
+# Based on lasso regression results below, BATHRM is not important enough for the model now
+```
+
+## Building Model and Data to work with Stan
+
+### Pass data and configuration parameters and sample
+
+```{r configuration parameters and sample}
+# Make data into a list for stan
+data_for_stan <- list()
+data_for_stan$N <- nrow(train_data)
+data_for_stan$C <- ncol(train_data) - 2
+data_for_stan$X_train <- train_data %>% select(-REMODEL.age, -QUALIFIED_2) %>% as.matrix()
+data_for_stan$match_outcome <- train_data$QUALIFIED_2
+data_for_stan$N_test <- nrow(test_data)
+data_for_stan$X_test <- test_data %>% select(-REMODEL.age,-QUALIFIED_2) %>% as.matrix()
+```
+
+Note that this takes a long time to run on my computer. It will take at least one hour to finish running this below
+
+### First Model using Normal Distribution
+
+### Comile the stancode into an executable
+
+Note that this takes a long time to run on my computer.
+
+```{r}
+getwd()
+setwd("C:/Users/aniec/OneDrive/Documents/UTH Bayesian Data Analysis/PH1965 Project")
+```
+
+```{r model with stan, warning=FALSE, message=FALSE, cache=TRUE}
+model <- stan_model('bayesian_project.stan')
+```
+
+```{r running model, cache=TRUE}
+# Sample from the posterior
+# Need iterations at least 1000 to work
+samples <- sampling(object = model,
+                    data = data_for_stan,
+                    chains = 1,
+                    iter = 10000,
+                    seed = 400)
+```
+
+### Inspect the results
+
+```{r }
+results_jpt <- extract(samples,par = c('intercept','coeffs')) %>% as.data.frame()
+results_jpt
+```
+
+```{r }
+results_summary <- summary(samples,par = c('intercept','coeffs'))$summary %>% as.data.frame()
+results_summary
+```
+
+```{r}
+round(results_summary, 4)
+```
+
+```{r}
+round(exp(results_summary), 4)
+```
+
+### Check pairs plot
+
+```{r }
+plot(samples,pars = c('intercept'))
+plot(samples,pars = c('coeffs'))
+plot(samples,pars = c('intercept','coeffs'))
+pairs(samples,pars = c('coeffs'))
+pairs(samples,pars = c('intercept','coeffs'))
+```
+
+### Interrogate results
+
+```{r }
+# Intercept
+rstan::extract(samples,pars = 'intercept') %>%
+  as.data.frame() %>%
+  ggplot() +
+  geom_histogram(aes(x = intercept),fill = 'transparent',color = 'black') + 
+  xlab('Intercept value') + 
+  ylab('Frequency') +
+  theme_bw() 
+  
+#abline(v = c(mean(rstan::extract(samples,pars = 'intercept'))-sd(rstan::extract(samples,pars = 'intercept')), mean(rstan::extract(samples,pars = 'intercept')), mean(rstan::extract(samples,pars = 'intercept'))+sd(rstan::extract(samples,pars = 'intercept'))), col = c('red', 'blue', 'red'), lwd = 2, lty = 'dashed')
+```
+
+### Test set performance
+
+```{r }
+summary(samples,pars = 'y_pred_test')$summary %>% head()
+```
+
+```{r }
+prediction_summary <- summary(samples,pars = 'y_pred_test')$summary %>%
+  as.data.frame() %>%
+  mutate(actual_outcome = test_data$QUALIFIED_2) %>%
+  arrange(desc(`50%`)) %>%
+  mutate(house_id = 1:n())
+```
+
+```{r }
+prediction_summary %>%
+  ggplot() + 
+  geom_segment(aes(y = `2.5%`,
+                   yend = `97.5%`,
+                   x = house_id,
+                   xend = house_id,
+                   color = factor(actual_outcome)),alpha = 0.3)+
+  geom_point(aes(x = house_id, y = `50%`,color = factor(actual_outcome)))+
+  coord_cartesian(xlim = c(0,nrow(prediction_summary)),ylim = c(0,1)) + 
+  xlab('DC Propert ID Number')+
+  ylab('Predicted prbability')
+```
+
+### Calculate the range of out of sample accuracy
+
+```{r }
+test_pred_matrix <- rstan::extract(samples)$y_pred_test
+test_pred_matrix[test_pred_matrix>0.5] = 1
+test_pred_matrix[test_pred_matrix<=0.5] = 0 
+actual_outcome = test_data$QUALIFIED_2
+
+calc_accuracy <- function(est){
+  return(mean(est == actual_outcome))
+}
+accuracy_range <- apply(test_pred_matrix,1,calc_accuracy)*100
+
+plot(hist(accuracy_range),  
+     xlab = "Accuracy Range (%)", 
+     ylab = "Frequency",
+     main = "Histogram of Accuracy Range")
+abline(v = c(mean(accuracy_range)-sd(accuracy_range),
+             mean(accuracy_range),
+             mean(accuracy_range)+sd(accuracy_range)), 
+       col = c('red', 'blue', 'red'), lwd = 2, lty = 'dashed')
+
+min(accuracy_range)
+max(accuracy_range)
+mean(accuracy_range)
+sd(accuracy_range)
+```
+
+```{r}
+getwd()
+setwd("C:/Users/aniec/OneDrive/Documents/UTH Bayesian Data Analysis/PH1965 Project")
+```
+

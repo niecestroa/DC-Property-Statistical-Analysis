@@ -1,0 +1,625 @@
+---
+title: "DC Properties Qualification's Binary Logistic Regression Report"
+author: "Aaron Niecestro"
+date: "May 7, 2019"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE, cache = TRUE)
+```
+
+## Introduction
+
+This report is about using binary logistic regression to figure out which variables and their effect those variables have on what makes a property qualified to sell. Qualified property means that the paperwork needed to sell a house, the deed of the property, approval from banks (if needed), etc. is completed, and the property inspection is passed. The reason this type of study is being conducted is that my partner and I both go to American University which is in the District of Columbia. We thought and believed that since a lot of students live in either DC or one of the surrounding states (West Virginia, Virginia, Maryland), this would be something we could analyze and learn from. Also, we felt that maybe some of our fellow students will be property owners or apartment renters in the coming future, if not already, and this would give insight into whether they will be able to pick a qualified and right place for themselves to live.\
+The next step was finding data that we could use for a logistic regression model. We found our data relatively fast from Kaggle D.C. Residential Property, and agreed upon using binary logistic regression analysis, although we could have also used nominal multinomial and ordinal logistic regression by using a different response variable then qualification. Once the data and type of logistic regression analysis were decided, the next step was coming up with questions we wished to answer. The questions we created and tried to answer were as follows: 1) What does the Qualification column in the dataset mean? 2) What qualifies a residential property to be sold on the housing market? 3) Is the property pricing the most important factor in determining whether a property is qualified to go on the market? 4) Do the realtors even care about whether a property is qualified to sell before listing it or is it all about the money? 5) Are we creating the most optimal regression for modeling properties? 6) Do we follow previous linear regression housing model approaches for predictor variables, or should we come up with our own model and approaches from scratch? and 7) Is money the most important thing? If so how does that define the world? With these questions in mind, we started to clean, assess, and manipulate the data, so no extremes were used in the analysis and modeling processes.
+
+## Data
+
+Following the download of the data we started to assess and figure out what each column represented and the importance of each column. The original data had 158957 rows and 49 columns. To do this we had to read the description of the columns on the Kaggle site and google what we might not have known since this is not our area of expertise. In the beginning, we ran into a slight problem with not knowing what the qualification column in the original dataset meant. To resolve this problem of ours, we tried to reach out to the original uploaders of this dataset, but the original uploaders have not gotten back to us yet. So, we researched ourselves what a qualified property might be and the things a person should do to sell their property. The research later becomes what the qualification response variable description.\
+Since the dataset had 49 columns, this report will describe only the variables used in the models and analysis. This is because it will take up too many pages otherwise. The model variables were as follows: 1) PRICE, price of most recent sale, 2) BATHRM, the number of full bathrooms, 3) HF_BATHRM, the number of half bathrooms (no bathtub or shower), 4) AC, whether the property has air conditioning, 5) ROOMS, the number of Rooms, 6) BEDRM, the number of bedrooms, 7) STORIES, the number of stories in the building or property, 8) QUALIFIED, whether a property is qualified to sell, 9) STYLE, the style of the property, 10) CNDTN, a verbal rating of the condition of the property, 11) KITCHENS, the number of kitchens, 12) FIREPLACES, the number of fireplaces, and 13) WARD, the ward and the ward number (District is divided into eight wards, each with approximately 75,000 residents). Although there were more variables, these variables were not used in our model and shall be described in a later report.\
+Unfortunately, we started to have a lot more issues even before the cleaning process began. One of the key issues we noticed right away and were coming across was that a lot of data was missing in most the columns. Each column besides the ID column had missing rows between 1 observation to over fifty percent. We also had two columns (complex number and living GBA) that had to be taken out since they had no data entries in any of the rows. We come to the decision not to add the data which could have been found on realtor sites that had similar qualities. We did not fill in the blanks for the missing data because it would increase bias dramatically and who knows whether the data we could have added it would be the correct data. The executive decision we came down to was taking out all the blanks from our dataset and working with only the data that was downloaded. 
+Although this method was working great, we ran into some more problems. Some of these issues we were facing were data being entered either incorrectly, data having errors, and values incorrectly labeled. One example air conditioning column (AC). The AC column was supposed to be Y, yes, and N, no, but it had a third value of 0 which had to be later changed to N. Once the data cleaning was completed, we decided the bounds we wished to use for our analysis. The bounds we came with were rather long but necessary in lowering bias. The bounds we came up with were as follows: Price between $10,000 and $1,000,000, Fireplaces less then 8, kitchens less than or equal to 10, rooms less than 26, bedrooms less than 20, stories of your building less than 100, bathrooms greater than 0, and half bathrooms great than 0. With these bounds in mind, we started to use visualizations to see what kinds of graphs we could create and data we are working with. Although this worked great for our visualizations, the dataset we used for a model had only the essential variables we wish to use. So, in total there were three datasets for this project which were called in order, the original dataset, the visualization dataset, and the model dataset. The original dataset as stated above had 158957 rows and 49 columns. The visualization dataset which used the specified bounds had 17522 rows and 46 columns. The model dataset which used the specified bounds had 33671 rows and 32 columns. Now that the data cleaning was completed we can move onto the analysis section where we will report on how we compiled our model and the model process. It should be noted that we were not happy and tried to figure out ways to get more than 1/5 of the original dataset to no avail.
+
+```{r Packages}
+library(tidyverse)
+library(readxl)
+library(broom)
+library(ggplot2)
+library(modelr)
+library(purrr)
+library(boot)
+library(scales)
+```
+
+```{r Data}
+## Data
+
+DC_Properties <- read_excel("~/Documents/STAT 616 Generalizd Linear Models/GLM Project/Data/DC_Properties.xlsx", na ="")
+summary(DC_Properties)
+dim(DC_Properties)
+```
+
+```{r Cleaning the data}
+## Minimum you have to take away since it was not need in the analysis or Visualisations
+
+## Visualisation Data
+
+DC_Properties_Visualisations <- DC_Properties %>%
+  select(-CMPLX_NUM, -LIVING_GBA, -SALE_NUM, -GIS_LAST_MOD_DTTM) %>%
+  filter(PRICE > 10000 & PRICE < 10000000,
+         HEAT != "No Data",
+         CNDTN != "No Data",
+         CNDTN != "Default",
+         STRUCT != "Default",
+         GRADE != " No Data",
+         STYLE != "Default",
+         KITCHENS <= 10,
+         ROOMS < 26,
+         BEDRM < 20,
+         STORIES <100,
+         BATHRM > 0,
+         HF_BATHRM > 0) %>%
+  mutate(QUALIFIED_2 = QUALIFIED) %>%
+  mutate(QUALIFIED_2 = ifelse(QUALIFIED == "Q", 1, 0))
+
+dcproperty <- na.omit(DC_Properties_Visualisations)
+
+dcproperty$AC[dcproperty$AC == "0"] <- "N"
+dcproperty$GRADE[dcproperty$GRADE == "Exceptional-A"] <- "Exceptional"
+dcproperty$GRADE[dcproperty$GRADE == "Exceptional-B"] <- "Exceptional"
+dcproperty$GRADE[dcproperty$GRADE == "Exceptional-C"] <- "Exceptional"
+dcproperty$GRADE[dcproperty$GRADE == "Exceptional-D"] <- "Exceptional"
+
+dim(dcproperty)
+
+## Final Cleaned Dataset
+
+DC_Properties_Final <- DC_Properties %>%
+  select(-NUM_UNITS, -YR_RMDL, -SALEDATE, -GBA, -STRUCT, -EXTWALL, -ROOF, -INTWALL, -CMPLX_NUM, -LIVING_GBA, -FULLADDRESS, -CITY, -STATE, -NATIONALGRID, -ASSESSMENT_SUBNBHD, -CENSUS_BLOCK, -SALE_NUM, -GIS_LAST_MOD_DTTM) %>%
+  filter(CNDTN != "No Data",
+         CNDTN != "Default",
+         GRADE != " No Data",
+         STYLE != "Default",
+         PRICE > 10000 & PRICE < 10000000,
+         FIREPLACES < 8,
+         KITCHENS <= 10,
+         ROOMS < 26,
+         BEDRM < 20,
+         STORIES <100,
+         BATHRM > 0,
+         HF_BATHRM > 0) %>%
+  mutate(QUALIFIED_2 = QUALIFIED) %>%
+  mutate(QUALIFIED_2 = ifelse(QUALIFIED == "Q", 1, 0))
+
+DC_Final <- na.omit(DC_Properties_Final)
+
+DC_Final$AC[DC_Final$AC == "0"] <- "N"
+
+dim(DC_Final)
+summary(DC_Final)
+
+## random case number
+
+cases <- c(1:2773, 4624:6649, 8000:12724, 15874:22079, 26216:31903)
+
+Final_T <- DC_Final[cases,]
+Final_V <- DC_Final[-cases,]
+```
+
+I choose the observations randomly for the training and validation set data to decrease bias.
+
+## Section 1: Analysis
+
+
+
+All of the analysis work is below
+
+#### Model Selection
+
+```{r Basic Model}
+## Basic that we originally thought to work with
+
+basic_model <- glm(as.factor(QUALIFIED_2) ~ PRICE, data = Final_T, family = binomial(link=logit))
+summary(basic_model)
+```
+
+```{r All variable model without interaction}
+## Model with all the variables we wished to use
+
+model3 <- glm(as.factor(QUALIFIED_2) ~ PRICE + BATHRM + HF_BATHRM + as.factor(AC) + ROOMS + BEDRM + STORIES + as.factor(STYLE) + as.factor(CNDTN) + KITCHENS + FIREPLACES + as.factor(WARD), data = Final_T, family = binomial(link=logit))
+summary(model3)
+```
+
+#### AIC & BIC Analysis
+
+```{r AIC without interaction}
+step(model3,direction="both")
+
+model_aic <- glm(as.factor(QUALIFIED_2) ~ PRICE + BATHRM + as.factor(AC) + ROOMS + BEDRM + as.factor(STYLE) + as.factor(CNDTN) + KITCHENS + as.factor(WARD), family = binomial(link = logit), data = Final_T)
+summary(model_aic)
+# AIC: 29329
+```
+
+```{r BIC without interaction}
+sampsize <- length(model3$fitted)
+step(model3, direction="both", k=log(sampsize))
+
+## Model Created from BIC Results is below
+
+model_bic <- glm(as.factor(QUALIFIED_2) ~ PRICE + BATHRM + as.factor(AC) + ROOMS + BEDRM + as.factor(STYLE) + as.factor(CNDTN) + KITCHENS + as.factor(WARD), data = Final_T, family = binomial(link=logit))
+summary(model_bic)
+# AIC: 29329, BIC = 32182
+
+## tested further to see what could be eliminated using AIC and BIC
+## got rid of STYLE - messing with model approaches, too many variables
+```
+
+```{r AIC and BIC without as.factor(STYLE)}
+## from AIC & BIC results
+
+model_inter <- glm(QUALIFIED_2 ~ PRICE + as.factor(AC) +ROOMS + BEDRM + as.factor(CNDTN) + as.factor(WARD) + PRICE*as.factor(AC) + PRICE*ROOMS + PRICE*BEDRM + PRICE*as.factor(CNDTN) + PRICE*as.factor(WARD) + as.factor(CNDTN)*as.factor(WARD), family = binomial(link = logit), data = Final_T)
+
+## AIC
+step(model_inter, direction = "both")
+
+## BIC
+sampsize <- length(model_inter$fitted)
+step(model_inter, direction="both", k=log(sampsize))
+```
+
+#### Final Model
+
+```{r}
+final_model <- glm(as.factor(QUALIFIED_2) ~ PRICE + I(PRICE^0.5) + as.factor(AC) + ROOMS + I(ROOMS^.2) + I(BEDRM^0.5) + as.factor(CNDTN) + as.factor(WARD) + PRICE*as.factor(AC) + PRICE*ROOMS + PRICE*as.factor(WARD), family = binomial(link = logit), data = Final_T)
+summary(final_model)
+```
+
+## Section 2: Visualisation
+
+Below are some diagnostic plot and visualisation that helped me understand more of the data and the models I tried to create.
+
+### Section 2.1: Analysis Visualisations
+
+#### Diagnostic Plots
+
+```{r Diagnostic Plots}
+a <- c(1:10)
+
+final_modelT.diag <- glm.diag(final_model)
+final_modelT.diag$rd[a]  # Standardized Deviance Residuals
+final_modelT.diag$rp[a]  # Standardized Person Residual
+final_modelT.diag$cook[a]  # Cook's D
+final_modelT.diag$h[a]  # Leverages
+
+glm.diag.plots(final_model)
+
+plot(final_model)
+```
+
+One can see from these diagnostic plots that we do not have normally distributed data. So the model will have to apply transformations to the predictor variables to make the data and model more normally distributed. 
+
+#### ROC Curve
+
+```{r ROC Curve}
+roc.analysis <-function (object, newdata = NULL, newplot=TRUE)
+{
+  if (is.null(newdata)) {
+    pi.tp <- object$fitted[object$y == 1]
+    pi.tn <- object$fitted[object$y == 0]
+  }
+  else {
+    pi.tp <- predict(object, newdata, type = "response")[newdata$y == 1]
+    pi.tn <- predict(object, newdata, type = "response")[newdata$y == 0]
+  }
+
+  pi.all <- sort(c(pi.tp, pi.tn))
+  sens <- rep(1, length(pi.all)+1)
+  specc <- rep(1, length(pi.all)+1)
+  for (i in 1:length(pi.all)) {
+    sens[i+1] <- mean(pi.tp >= pi.all[i], na.rm = T)
+    specc[i+1] <- mean(pi.tn >= pi.all[i], na.rm = T)
+  }
+ 
+  npoints <- length(sens)
+  area <- sum(0.5 * (sens[-1] + sens[-npoints]) * (specc[-npoints] -
+        specc[-1]))
+  lift <- (sens - specc)[-1]
+  cutoff <- pi.all[lift == max(lift)][1]
+  sensopt <- sens[-1][lift == max(lift)][1]
+  specopt <- 1 - specc[-1][lift == max(lift)][1]
+
+  if (newplot){
+  plot(specc, sens, xlim = c(0, 1), ylim = c(0, 1), type = "s",
+            xlab = "1-specificity", ylab = "sensitivity", main="ROC")
+  abline(0, 1)
+  }
+  else lines(specc, sens, type="s", lty=2, col=2)
+
+  list(pihat=as.vector(pi.all), sens=as.vector(sens[-1]),
+  spec=as.vector(1-specc[-1]), area = area, cutoff = cutoff,
+  sensopt = sensopt, specopt = specopt)
+}
+
+b <- c(1:10, 34317:34327)
+trainingROC <- roc.analysis(final_model)
+trainingROC$area
+trainingROC$cutoff
+trainingROC$sensopt
+trainingROC$specopt
+
+Final_V$y <- Final_V$QUALIFIED_2
+validationROC <- roc.analysis(final_model, newdata=Final_V, newplot=F)
+validationROC$area
+validationROC$cutoff
+validationROC$sensopt
+validationROC$specopt
+```
+
+As one can see the training set and validation set lines are very close to one another which is very good. The closer the black (training) and red (validation) lines are to one another the better our model is. However both areas are still relatively very low and it would of been better if they were above 0.85. Since the areas are below 0.85, we can conclude that the model needs work.
+
+#### Variance Inflation Factors (VIF)
+
+```{r}
+library(rms)
+
+vif(glm(as.factor(QUALIFIED_2) ~ PRICE + I(PRICE^0.5) + as.factor(AC) + ROOMS + I(ROOMS^.2) + I(BEDRM^0.5) + as.factor(CNDTN) + as.factor(WARD) + PRICE*as.factor(AC) + PRICE*ROOMS + PRICE*as.factor(WARD), family = binomial(link = logit), data = Final_T))
+```
+
+It seems that multicollinearity is still an issue with the interaction terms and transformations. Number that are above 5 means that the variables are too closely correlated with one another and that is a bad thing to have. The saving grace here is that the numbers are only above 5 in the interaction terms and transformation variables which makes sense.
+
+### Section 2.2: Model Visualisation
+
+#### Basic Model Graph
+
+```{r}
+(graph <- ggplot(dcproperty, aes(y=PRICE, x=QUALIFIED_2)) +
+    stat_sum() +
+    stat_smooth(method="glm",
+                method.args = list(family="binomial"), se=TRUE,
+                fullrange=TRUE) +
+    labs(title = "Market Qualification based on Price and Location",
+       subtitle = "Ward 2 and Ward 3 are the more expensive places to live",
+       caption = "Data from Kaggle.com",
+       y = "Price ($)",
+       x = "Qualifcation to be on Market",
+       color = "Qualification") +
+  facet_wrap(~WARD) +
+  theme_bw())
+```
+
+One can see that Ward 2 and 3 has a higher distribution of price rangers, while Ward 4 and 5 have low priced property but the qualifation ratios are nearly identical.
+
+#### Map Graphs
+
+```{r Map Graph1}
+ggplot(dcproperty, aes(x=X, y=Y)) +
+  geom_point(aes(color=ZIPCODE)) +
+  labs(title = "Map of Data by Zipcode",
+       subtitle = "Locations are well distributed",
+       caption = "Data from Kaggle.com",
+       y = "Longitude",
+       x = "Latitude",
+       color = "Zipcode") +
+  theme_bw() +
+  theme(legend.position = "right")
+```
+
+It seems that the zipcodes are distributed very well across our DC data. 
+
+```{r Map Graph2}
+ggplot(dcproperty, aes(x=X, y=Y)) +
+  geom_point(aes(color=WARD)) +
+  labs(title = "Map of Data by Ward",
+       subtitle = "Originally there were 8 Wards",
+       caption = "Data from Kaggle.com",
+       y = "Longitude",
+       x = "Latitude",
+       color = "WARD") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+It seems that the Wards numbers have changed over time so that is why some of these colored dots are not where they are suppose to be. Through cleaning of the data we lost Wards 6-8 but there is nothing we can do since if we kept them our model would not run properly. 
+
+```{r Map Graph3}
+ggplot(dcproperty, aes(x=X, y=Y)) +
+  geom_point(aes(color=QUADRANT)) +
+  labs(title = "Map of Data By Quadrants",
+       subtitle = "Little to no South-West area",
+       caption = "Data from Kaggle.com",
+       y = "Longitude",
+       x = "Latitude",
+       color = "Quadrant") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+It seems that most of our properties are in the northwest region of DC. This makes sense considering a lot of the schools and unviersities are in this area. Southwest is the smallest because it is the smallest region in the map anyway. Also I believe that the southwest dots listed above are waterfront property or at least have nice views, otherwise we may not of had any observations in the southwest region.
+
+#### Year Graphs
+
+```{r Year Graph1}
+## use these graphs below
+
+dcproperty %>%
+  filter(YR_RMDL > 1800) %>%
+  ggplot(mapping = aes(y=YR_RMDL, x=QUADRANT, color = QUALIFIED)) +
+  geom_boxplot() +
+  labs(title = "Price based on Qualifications and Quadrant",
+       subtitle = "Ward 1 to 3 are the most expensive",
+       caption = "Data from Kaggle.com",
+       y = "Year Last Remodeled",
+       x = "Quadrant",
+       color = "Qualification") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+The southwest region having such a large boxplot can be explained through the Quadrant DC map. As for the rest of the regions, it is interesting that all the means are between 2000-2010, but the first remodeled year was before 1920 in the southeast region.
+
+```{r Year Graph2}
+dcproperty %>%
+  filter(YR_RMDL > 1800) %>%
+  ggplot(mapping = aes(y=YR_RMDL, x=GRADE, color = QUALIFIED)) +
+  geom_boxplot() +
+  coord_flip() +
+  labs(title = "Price based on Qualifications and Grade",
+       subtitle = "Ward 1 to 3 are the most expensive",
+       caption = "Data from Kaggle.com",
+       y = "Year Last Remodeled",
+       x = "Grade",
+       color = "Qualification") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+The most interesting thing here is that there were no outliers in the plot for the fair quality grade. It is also interesting to note that all the mean year remodeled grades are between 2005-2010. It seems that either the system got much better or because communication and reviiewing become more popular in the last 20 years.
+
+```{r Year Graph3}
+dcproperty %>%
+  filter(YR_RMDL > 1800) %>%
+  ggplot(mapping = aes(y=YR_RMDL, x=CNDTN, color = QUALIFIED)) +
+  geom_boxplot() +
+  coord_flip() +
+  labs(title = "Price based on Qualifications and Condition",
+       subtitle = "Ward 1 to 3 are the most expensive",
+       caption = "Data from Kaggle.com",
+       y = "Year Last Remodeled",
+       x = "Condition Review",
+       color = "Qualification") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+This is a very interesting plot to observe. It is interesting that the excellent condition review had the least outliers, fair condition review had no outliers, and good condition review had the most outliers. It seems that a good condition review is the most popular. I believe that everything above can be explained by people have too high of an opinion and people being lazy and loving to comemnt everything as good and average.
+
+#### Building Heat and AC Graph
+
+```{r Heat and AC Graph}
+ggplot(dcproperty, aes(x=AC, y=PRICE)) +
+  geom_point(aes(color=HEAT, )) +
+  facet_wrap(~QUALIFIED_2) +
+  labs(title = "Price, AC and Heat",
+       subtitle = "AC is Important to the Price",
+       caption = "Data from Kaggle.com",
+       y = "Price",
+       x = "AC",
+       color = "Heat") +
+  theme_bw() +
+  theme(legend.position = "right")
+```
+
+It seems that the distribution of price between having AC and being a qualified property is about the same. Yet when it comes to warm heat that is what decides how high a price was able to be raised. I do not understand the differences in heat that much so I am unable to comment further on this plot.  
+
+#### Continuous Variable Plots
+
+```{r Number Graph1}
+text_df <- tibble(text = " \n After 18 rooms \n Price decreases", x = -Inf, y = Inf)
+ggplot(dcproperty, aes(ROOMS, PRICE)) +
+  geom_point(aes(color = factor(QUALIFIED_2, labels = c("Not Qualifed", "Qualified")))) +
+  geom_smooth(se = FALSE, color = "black") + 
+  labs(title = "Price Increases as Rooms Increases",
+       subtitle = "A Majority of Qualified Places to live are less then 1 Million Dollars",
+       caption = "Data from Kaggle.com",
+       y = "Price ($)",
+       x = "Number of Rooms",
+       color = "Qualification") +
+  geom_text(aes(x, y, label = text), data = text_df, vjust = "top", hjust = "left") +
+  scale_colour_brewer(palette = "Set1") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+It seems that only when you have at least 5 rooms does hte price of a property start to increase but if you have more than 18 rooms the price will start to drop slowly. I believe that after having 22 rooms might be outliers and that is why we are seeing such a sharp increase in price. Also the more rooms you have the more we see that a property is unqualified to sell.
+
+```{r Number Graph2}
+text_df <- tibble(text = "More Kitchens equals\nLower Price & Less Qualified", x = Inf, y = Inf)
+ggplot(dcproperty, aes(KITCHENS, PRICE)) +
+  geom_point(aes(color = factor(QUALIFIED_2, labels = c("Not Qualifed", "Qualified")))) +
+  labs(title = "Kitchens Impact on Price",
+       subtitle = "Having Fewer Kitchens Increases the Price",
+       caption = "Data from Kaggle.com",
+       y = "Price ($)",
+       x = "Number of Kitchens",
+       color = "Qualification") +
+  geom_text(aes(x, y, label = text), data = text_df, vjust = "top", hjust = "right") +
+  scale_colour_brewer(palette = "Set1") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+The difference in having a kitchen and not having a kitchen is as clear as day. Not having a kitechen will get you veyr little in price over at least having one kitchen in your property. It is interesting though that price trend starts to decrease after having kitchen. I guess people do not like having too many places to cook and clean. 
+
+```{r Number Graph3}
+text_df <- tibble(text = "After Bedrooms equals 9\nPrice decreases", x = Inf, y = Inf)
+ggplot(dcproperty, aes(NUM_UNITS, PRICE)) +
+  geom_point(aes(color = as.factor(QUADRANT))) +
+  labs(title = "Bedrooms Impact on Price",
+       subtitle = "Having too much is bad thing",
+       caption = "Data from Kaggle.com",
+       y = "Price ($)",
+       x = "Number of Avaliable Units",
+       color = "Quadrant") +
+  geom_text(aes(x, y, label = text), data = text_df, vjust = "top", hjust = "right") +
+  scale_colour_brewer(palette = "Set1") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+It seems that having at least one property to sell will have a large range of values. having between 2 and 4 similar properties to seems is about the same. If we follow the principles behind supply and demand this graph makes perfect sense.
+
+```{r Number Graph4}
+text_df <- tibble(text = "More Bedrooms equals\nLower Price & Less Qualified", x = -Inf, y = Inf)
+ggplot(dcproperty, aes(BEDRM, PRICE)) +
+  geom_point(aes(color = factor(QUALIFIED_2, labels = c("Not Qualifed", "Qualified")))) +
+  geom_smooth(se = FALSE, color = "black") + 
+  labs(title = "Bedrooms Steep Increase & Decrease on Price",
+       subtitle = "Having Fewer Kitchens Increases the Price",
+       caption = "Data from Kaggle.com",
+       y = "Price ($)",
+       x = "Number of Bedrooms",
+       color = "Qualification") +
+  geom_text(aes(x, y, label = text), data = text_df, vjust = "top", hjust = "left") +
+  scale_colour_brewer(palette = "Paired") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+It seems that the more bedrooms you have will make the price increase until you have 9 bedrooms that is. If you look closely enough one can see that the price trend drops from studio (no bedrooms) and 2 bedrooms. I thought that the price trend would have been always increasing but it semes from graph my logic and guess was wrong. However we can see that at the beginnning and end our confidence interval starts to increase while in the middle the confidence interval we had was the same as the line.
+
+```{r Number Graph5}
+text_df <- tibble(text = "Highest Price is when \n the Number of Stories \n is between 2 to 3", x = Inf, y = Inf)
+ggplot(dcproperty, aes(STORIES, PRICE)) +
+  geom_point(aes(color = factor(QUALIFIED_2, labels = c("Not Qualifed", "Qualified")))) +
+  geom_smooth(se = FALSE, color = "black") + 
+  labs(title = "Stories Increase & Dramatic Decrease with Price",
+       subtitle = "Having between 1 and 5 Stories = Higher Price",
+       caption = "Data from Kaggle.com",
+       y = "Price ($)",
+       x = "Number of Stories",
+       color = "Qualification") +
+  geom_text(aes(x, y, label = text), data = text_df, vjust = "top", hjust = "right") +
+  scale_colour_brewer(palette = "Paired") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+It is interesting how the price trend line is increasing and decreasing throughout this graph. It seems that people like to have property that hs few floors but once you leave in a building the the price can change in many ways. Also it is interesting that how the middle (1-4 stories) has an almost eqla distributions of qualfieid and unqualified properties.
+
+```{r Number Graph6}
+text_df <- tibble(text = "It seems that The number of Fireplaces \n has little effect to change in price", x = Inf, y = -Inf)
+ggplot(dcproperty, aes(FIREPLACES, PRICE)) +
+  geom_point(aes(color = factor(QUALIFIED_2, labels = c("Not Qualifed", "Qualified")))) +
+  geom_smooth(se = FALSE, color = "blue") + 
+  labs(title = "Fire Places and Price",
+       subtitle = "Qualification Rate is unchanging in with the increase in Fire Places",
+       caption = "Data from Kaggle.com",
+       y = "Price ($)",
+       x = "Number of Fireplaces",
+       color = "Qualification") +
+  geom_text(aes(x, y, label = text), data = text_df, vjust = "bottom", hjust = "right") +
+  scale_colour_brewer(palette = "Reds") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+This is the only graph in my analysis that is confusing and has a high upward sloping curve for half of the graph. I say that this is confusing because I can not believe someone would want more then one fireplace and that the price increases for every additional fireplace. (I choose the colors to be similar to fire.) Next time I have to set the number of fireplaces to greater then or 8.
+
+# Time Graphs
+
+```{r}
+ggplot(dcproperty, aes(SALEDATE, PRICE)) + 
+  geom_point(aes(color = as.factor(QUALIFIED_2))) +
+  geom_smooth(se = FALSE, color = "red") + 
+  labs(title = "Price increases as Time increases",
+       subtitle = "The closer the sales date gets to the present the higher the price",
+       caption = "Data from Kaggle.com",
+       y = "Price ($)",
+       x = "Year Last Sold",
+       color = "Qualification") + 
+  scale_colour_brewer(palette = "BuPu") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+It seems that the closer one gets to the presense in property sales the higher the price will be. Makes perfect sense to me. The trend line not increasing shaprly can be explained if one checks inflation rate of each year.
+
+```{r}
+ggplot(dcproperty, aes(SALEDATE, PRICE)) + 
+  geom_point(aes(color = as.factor(WARD))) +
+  geom_smooth(se = FALSE, color = "black") + 
+  labs(title = "Stacking of Ward Areas over Years by Grade",
+       subtitle = "The lower the ward number you are in the higher the price will be",
+       caption = "Data from Kaggle.com",
+       y = "Price ($)",
+       x = "Year Last Sold",
+       color = "Ward") + 
+  scale_colour_brewer(palette = "YlOrBr") +
+  facet_wrap(~GRADE) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+This is an interesting graph to look and observe. The Ward numbers are almost stacked one on top of the other in eveyr grade category except for aver and above average. The better the grade a property recieved the higher the price will be which makes perfect sense.
+
+```{r}
+ggplot(dcproperty, aes(SALEDATE, PRICE)) + 
+  geom_point(aes(color = as.factor(QUADRANT))) +
+  geom_smooth(se = FALSE, color = "black") + 
+  labs(title = "Overlap of Quadrant Price over Years by Grade",
+       subtitle = "Except Northwest, which sells at the highest price",
+       caption = "Data from Kaggle.com",
+       y = "Price ($)",
+       x = "Year Last Sold",
+       color = "Quadrant") + 
+  facet_wrap(~GRADE) +
+  scale_colour_brewer(palette = "YlGnBu") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+```
+
+This graph has a similar outlook to the graph above. It seems taht only the northwest region was able to get the highest conditin reviews. We can see like the graph above there is some stacking in good quality, above average, and average but not so much in very good or fair.It is interesting though the shape of the data points for very good, above, average, good quality, and excellent are almost identical but only excellent is dominated by the northwest region.
+
+```{r}
+ggplot(dcproperty, aes(SALEDATE, ROOMS)) + 
+  geom_point(aes(color = as.factor(GRADE))) +
+  geom_smooth(se = FALSE, color = "black") + 
+  labs(title = "Overlap of Quadrant Price over Years by Ward",
+       subtitle = "Except Northwest, which sells at the highest price",
+       caption = "Data from Kaggle.com",
+       y = "Rooms",
+       x = "Year Last Sold",
+       color = "Condition") + 
+  scale_colour_brewer(palette = "Paired") +
+  facet_wrap(~WARD) +
+  theme_bw() +
+  theme(legend.position = "right")
+```
+
+I like to call this graph the color mess. It seems that the shape of the top ward (Ward 1-3) and the bottom wards (Wards 4-5) are similar between themselves but the top and bottom are not. Also Wards 1-3 have a a lot more color then Wards 4,5 do. It seems that rooms started to increase as we get closer to the present. THis makes sense considering people lived within their means back in the 20th century.
+
+## Conclusion
+
+To conclude we have created a binary logistic model for what determines whether a property is qualified enough to sell. Although the AIC is very high as 16,748, it seems that the model fits that data well. It was a long analysis process but we could complete it even with the time restrictions we had. Now we will answer the 7 questions we had at the beginning of this study. The answers to our seven questions were as follows: 1) We were not able to hear back from Chris, the provider of this dataset on Kaggle, we so can still not answer what the qualification column in the original dataset means. 2) The qualifications for a residential property to be sold on the market is that the paperwork is completed and submitted, the bank approves any transaction that the buyers and sellers need and the inspection of the property is passed. 3) From all our analysis so far, we can conclude that property pricing is the most important factor in determining whether a property is qualified to go on the market 4) From all our analysis so far, we can conclude realtors do care whether the property is qualified to sell and money is the most important to them. Since the more the realtor sells and the higher the price, the property is sold for the more money from the deal they receive. 4) We believe that we were creating the most optimal regression for modeling properties based on our response variable being qualification. Overall though a multiple linear type regression would work best when it comes to making housing, property, and apartment models. 5) We did follow the previous housing model approaches for predictor variables at the beginning of our model building but our analysis later had different predictor variables from those models creating using linear regression. 6) Yes, money is the most important thing. We will not say how this defines this world since we do not wish to be labeled as pessimistic people. Thankfully, we could answer our questions based on our analysis results and work, yet this does not mean we will stop the analysis being conducted. \
+For future analysis, we would do many things differently and add many different types of things.  We will do the following things in the future: 1) conduct more time analysis and visualizations, 2) conduct some sentiment analysis on the street, neighborhood, and State one lives in since people are sometimes superstitious, 3) Try to see if we can hear back on what qualification meant in the dataset, 4) Add a few more variables – for example: Heat, and the interaction terms of heat and AC, 5) Collect data from realtor’s websites and fill in the information ourselves since we were losing data constantly, 6) Add neighborhood rating, neighborhood review 7) Collect data from the surrounding states (West Virginia, Virginia, Maryland). \
+In conclusion, through all our analysis and graphs our model might have been able to measure the odds for determining qualifications. This model is nowhere near good enough to be published or presented in a conference. This was a great learning experience for careers even though the model we created is still inferior to a linear regression pricing model since we believe that money is the most important to realtors and people when it comes to the housing market. If you wish to know more about the data and analysis we have completed visit reference link 1. As a famous person once said, “failure is the mother of success.”
+
+## References
+
+1. https://aaronniecestro.shinyapps.io/DC-Housing/ 
+2. McKay, Allie W. “Farmers' Markets vs. Food Deserts: Which Are Winning in DC?” The Capital's Markets, 31 July 2014, thecapitalsmarkets.wordpress.com/2014/07/31/farmers-markets-vs-food-deserts-which-is-winning-in-dc/.
+3. Johnson, Matt. “Washington's Systemic Streets.” Greater Greater Washington, ggwash.org/view/2530/washingtons-systemic-streets.
+4. “Money Is The Root Of All Evil Stock Photos and Images.” Alamy, www.alamy.com/stock-photo/money-is-the-root-of-all-evil.html.
+5. “Types of Housing Models and Programs.” The 519, www.the519.org/education-training/lgbtq2s-youth-homelessness-in-canada/types-of-housing-models-and-programs.
+6. Dobbins, Tim, and John Burke. “Predicting Housing Prices with Linear Regression Using Python, Pandas, and Statsmodels.” Learn Data Science - Tutorials, Books, Courses, and More, www.learndatasci.com/tutorials/predicting-housing-prices-linear-regression-using-python-pandas-statsmodels/.
+7. Corsini, Kenneth Richard. “STATISTICAL ANALYSIS OF RESIDENTIAL HOUSING PRICES IN AN UP AND DOWN REAL ESTATE MARKET: A GENERAL FRAMEWORK AND STUDY OF COBB COUNTY, GA .” A Thesis Presented to The Academic Faculty, Georgia Institute of Technology, Dec. 2009, smartech.gatech.edu/bitstream/handle/1853/31763/Corsini_Kenneth_R_200912_mast.pdf.
+8. "Regression Data for Inclusionary Housing Simulation Model | DataSF | City, and County of San Francisco." San Francisco Data, data.sfgov.org/Economy-and-Community/Regression-data-for-Inclusionary-Housing-Simulatio/vcwn-f2xk/data.
+9. Leonard, Kimberlee. “What Forms Are Needed to Sell a Home by Owner?” Home Guides | SF Gate, 29 Dec. 2018, homeguides.sfgate.com/forms-needed-sell-home-owner-7271.html.
+10. Leonard, Kimberlee. “What Is the Procedure for Closing a for Sale by Owner House Sale?” Home Guides | SF Gate, 15 Dec. 2018, homeguides.sfgate.com/procedure-closing-sale-owner-house-sale-65511.html.
+
+I worked with Kingsley Iyawe in STAT-616 Generalized Linear Models to complete this project and report. He deserves some credit for this report. 
+
+

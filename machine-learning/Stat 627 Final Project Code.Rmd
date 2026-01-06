@@ -1,0 +1,792 @@
+---
+title: "Stat 627 Project Report"
+author: "Aaron Niecestro"
+date: "Decmeber 8, 2019"
+output:
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, cache = TRUE)
+```
+
+### Packages
+
+```{r packages}
+library(tidyverse)
+library(broom)
+library(ggplot2)
+library(boot)
+library(scales)
+library(class)
+library(glmnet)
+library(leaps)
+library(car)
+library(MASS)
+library(tree)
+library(pls)
+library(randomForest) 
+```
+
+### Raw Data
+
+```{r Raw Data}
+DC_Properties <- read.csv("~/Documents/STAT 627 Statistical Machine Learning/Stat 627 Project/Data/DC_Properties.csv")
+DC_Properties <- data.frame(DC_Properties) # making sure that this is data frame dataset
+```
+
+### Data Cleaning
+
+```{r Tidying Data}
+DC_Properties[is.na(DC_Properties)] <- 0 # setting all NA to 0 
+# makes data easier to clean and work with
+
+## Final Cleaned Dataset
+
+select <- dplyr::select
+
+DC_Properties_tidy <- DC_Properties %>%
+  select(PRICE, BATHRM, HF_BATHRM, HEAT, AC, ROOMS, BEDRM, AYB, YR_RMDL, EYB, STORIES, QUALIFIED, GRADE, CNDTN, KITCHENS, FIREPLACES, WARD, QUADRANT, LATITUDE, LONGITUDE) %>%
+  mutate(PRICE = as.numeric(PRICE),
+         BATHRM = as.numeric(BATHRM),
+         HF_BATHRM = as.numeric(HF_BATHRM),
+         ROOMS = as.numeric(ROOMS),
+         BEDRM = as.numeric(BEDRM),
+         AYB = as.numeric(AYB),
+         EYB = as.numeric(EYB),
+         STORIES = as.numeric(STORIES),
+         KITCHENS = as.numeric(KITCHENS),
+         FIREPLACES = as.numeric(FIREPLACES),
+         LATITUDE = as.numeric(LATITUDE),
+         LONGITUDE = as.numeric(LONGITUDE),
+         HEAT = as.character(HEAT), # made character columns here to filter and clean data better
+         AC = as.character(AC),
+         QUALIFIED = as.character(QUALIFIED),
+         GRADE = as.character(GRADE),
+         CNDTN = as.character(CNDTN)) %>%
+  filter(CNDTN != "",
+         CNDTN != "Default",
+         CNDTN != "Poor",
+         GRADE != " No Data",
+         GRADE != "",
+         HEAT != "No Data", # lose ~50,000 observations of the data by here
+         PRICE > 10000 & PRICE < 10000000,
+         FIREPLACES < 10,
+         KITCHENS <= 10,
+         ROOMS <= 40,
+         BEDRM <= 20,
+         STORIES <= 10,
+         LATITUDE != 0,
+         LONGITUDE != 0) %>% # Up to here, I lose roughly 100K observations
+  mutate(AYB.age = AYB, # making new quantitative
+         AYB.age = 2019 - AYB.age,
+         AYB.age = ifelse(AYB == 2019, 0, AYB.age),
+         EYB.age = as.numeric(EYB),
+         EYB.age = 2019 - EYB.age,
+         EYB.age = ifelse(EYB == 2019, 0, EYB.age),
+         REMODEL.age = as.character(YR_RMDL),
+         REMODEL.age = ifelse(REMODEL.age == "0", 0, REMODEL.age),
+         REMODEL.age = ifelse(REMODEL.age == "20", 0, REMODEL.age),
+         REMODEL.age = as.numeric(REMODEL.age),
+         REMODEL.age = 2019 - REMODEL.age,
+         REMODEL.age = ifelse(REMODEL.age == 2019, 0, REMODEL.age),
+         GRADE = ifelse(GRADE == "Exceptional-A", "Exceptional", GRADE), # fixing Grade
+         GRADE = ifelse(GRADE == "Exceptional-B", "Exceptional", GRADE),
+         GRADE = ifelse(GRADE == "Exceptional-C", "Exceptional", GRADE),
+         GRADE = ifelse(GRADE == "Exceptional-D", "Exceptional", GRADE),
+         QUALIFIED_2 = QUALIFIED, # making new Qualified Variable
+         QUALIFIED_2 = ifelse(QUALIFIED == "Q", 1, 0),
+         QUALIFIED_2 = as.factor(QUALIFIED_2),
+         AC = ifelse(AC == "0", "N", AC),
+         GRADE = as.factor(GRADE), # fixed certain variables back to factors
+         HEAT = as.factor(HEAT), 
+         AC = as.factor(AC),
+         WARD = as.factor(WARD),
+         CONDITION = as.factor(CNDTN),
+         QUALIFIED = as.factor(QUALIFIED),
+         AYB.age = as.numeric(AYB.age),
+         EYB.age = as.numeric(EYB.age),
+         REMODEL.age = as.numeric(REMODEL.age))%>%
+  select(-CNDTN, -AYB, -YR_RMDL, -EYB) # select again 
+
+DC_Final <- na.omit(DC_Properties_tidy)
+
+DC_Final <- DC_Final %>%
+  filter(AYB.age < 2000) %>%
+  mutate(PRICE_10K = PRICE/10000,
+         BATHRM = BATHRM + HF_BATHRM*.5,
+         BATHRM = as.numeric(BATHRM)) %>%
+  select(PRICE, PRICE_10K, BATHRM, ROOMS, BEDRM, STORIES, KITCHENS, FIREPLACES, LATITUDE,
+         LONGITUDE, AYB.age, EYB.age, REMODEL.age, HEAT, AC, QUALIFIED, QUALIFIED_2, GRADE, WARD,
+         QUADRANT, CONDITION)
+
+set.seed(10000000)
+
+DC_Final <- sample_n(DC_Final, 57610, replace = TRUE) # want the datasets to be even 
+# I lost one observation by doing this
+dim(DC_Final)
+summary(DC_Final)
+
+## random case number
+
+n <- length(DC_Final$PRICE_10K)
+Z <- sample(n,n/2)
+
+DC_train <- DC_Final[Z,]
+DC_test <- DC_Final[-Z,]
+
+# kitchens needs NA switched to 0
+# stories has a lot of NAs = 52305, mutate NA or "" to 0
+# Price also has a lot of NA = 60741, mutate NA to 0
+
+attach(DC_train)
+```
+
+### Diagnostics
+
+```{r diagnostics}
+attach(DC_Final)
+par(mfrow=c(3,3))
+qqnorm(BATHRM)
+qqline(BATHRM)
+qqnorm(ROOMS)
+qqline(ROOMS)
+qqnorm(BEDRM)
+qqline(BEDRM)
+qqnorm(STORIES)
+qqline(STORIES)
+qqnorm(KITCHENS)
+qqline(KITCHENS)
+qqnorm(FIREPLACES)
+qqline(FIREPLACES)
+qqnorm(AYB.age)
+qqline(AYB.age)
+qqnorm(EYB.age)
+qqline(EYB.age)
+qqnorm(REMODEL.age)
+qqline(REMODEL.age)
+hist(BATHRM)
+hist(ROOMS)
+hist(BEDRM)
+hist(STORIES)
+hist(KITCHENS)
+hist(FIREPLACES)
+hist(AYB.age)
+hist(EYB.age)
+hist(REMODEL.age)
+par(mfrow=c(1,1))
+detach(DC_Final)
+```
+### Stepwise Selection
+
+#### Stepwise AIC
+
+```{r AIC without interaction}
+attach(DC_train)
+## Stepwise AIC
+
+model.all <- lm(PRICE ~ BATHRM + HEAT + AC + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + QUADRANT + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + QUALIFIED_2 + CONDITION)
+
+step(model.all, direction="both")
+
+# Model Output from AIC
+model_aic <- lm(PRICE ~ BATHRM + HEAT + AC + ROOMS + 
+    BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + 
+    WARD + QUADRANT + LATITUDE + LONGITUDE + AYB.age + EYB.age + 
+    REMODEL.age + CONDITION)
+summary(model_aic)
+# AIC = 744905.4, Huge AIC, but smallest when compare models
+
+## Stepwise BIC
+
+sampsize <- length(model.all$fitted)
+step(model.all, direction="both", k=log(sampsize))
+
+# Model Created from BIC Results is below
+
+model_bic <- lm(PRICE ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION)
+summary(model_bic)
+# AIC=744905.4, BIC = 32182
+
+# tested further to see what could be eliminated using AIC and BIC
+# got rid of STYLE - messing with model approaches, also too many dummy variables
+```
+
+### Variable Selection using regsubsets with Graphs
+
+```{r Variable Selection}
+attach(DC_train)
+
+null <- lm( PRICE ~ 1, DC_train )
+full <- lm( PRICE ~ ., data = DC_train)
+
+# Backwards Selection
+step( full, scope=list(lower=null, upper=full), direction="backward" )
+
+reg.backward <- regsubsets( PRICE ~ ., data=DC_train, method = "backward" )
+plot(reg.backward, scale = "r2" )
+
+# # Forward Selection
+reg.forward <- regsubsets( PRICE ~ ., data=DC_train, method = "forward" )
+plot(reg.forward, scale = "r2" )
+
+step( null, scope=list(lower=null, upper=full), direction="forward" )
+```
+
+### Partial F-tests
+
+```{r}
+attach(DC_train)
+reg_full <- lm(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION)
+reg_reduced <- lm(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age)
+anova(reg_full, reg_reduced)
+```
+
+### Variable Selection Best Model
+
+```{r}
+attach(DC_train)
+final_model <- lm(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION)
+summary(final_model)
+```
+
+### Polynomial
+
+### Code used to get final model
+
+```{r polynomial code}
+attach(DC_train)
+# Numerical Variables
+# BATHRM + HF_BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION
+
+polynomial.fit2 = regsubsets( PRICE~ poly(AYB.age, 6), data=DC_Final ) # put to 8th power
+which.max(summary(polynomial.fit2)$adjr2) # powert to 8
+which.min(summary(polynomial.fit2)$cp) # powert to 8
+which.min(summary(polynomial.fit2)$bic) # power to 8
+detach(DC_train)
+
+attach(DC_Final)
+
+plot(BATHRM, PRICE)
+reg = lm(PRICE ~ BATHRM )
+abline(reg)
+plot( BATHRM, residuals(reg) )
+
+plot(STORIES, PRICE)
+reg = lm(PRICE ~ STORIES )
+abline(reg)
+plot( STORIES, residuals(reg) )
+
+detach(DC_Final)
+```
+
+### Final Model with Machine Learning Techniques
+
+```{r real final model}
+attach(DC_train)
+# Use this model below as your final model
+final_model.all <- lm(PRICE_10K ~ poly(BATHRM, 8) + poly(ROOMS, 1) + poly(BEDRM, 8) + QUALIFIED + GRADE + poly(KITCHENS, 1) + poly(FIREPLACES, 4) + WARD + LATITUDE + LONGITUDE + poly(AYB.age, 4) + poly(EYB.age, 4) + poly(REMODEL.age, 4) + CONDITION*BATHRM) # Adjusted R2 = 0.6958 
+summary(final_model.all)
+
+# Adjusted R2 = 0.6917
+```
+
+### Final Model Regression Diagnostics
+
+```{r Regression Diagnostics, cache=TRUE}
+attach(DC_Final)
+
+# Basic Diagnostic Plot
+plot(final_model.all)
+
+# STUDENTIZED RESIDUALS AND OUTLIERS
+
+t = rstudent(final_model.all)
+plot(t)
+t[ abs(t) > 25 ] # p =26, so use p-1 =25
+
+qt( 0.05/2/28827, 28800 ) # alpha/2/dim(Final_T[1], dim(Final_T[1]-p-1 ), need to change since dimenstion have changed
+t[ abs(t) > abs(qt( 0.05/2/28827, 28800)) ] # need to change since dimenstion have changed
+
+# Testing Normality
+# shapiro.test(t) 
+# unable to use since sample size > 5000
+
+# INFLUENTIAL DATA
+
+outlierTest(final_model.all)
+cook = cooks.distance(final_model.all)
+plot(cook)
+# influence.measures(final_model.all)
+
+# VARIANCE INFLATION FACTORS
+vif(final_model)
+```
+
+### KNN 
+
+```{r Price KNN, cache = TRUE}
+# Property Price KNN
+
+attach(DC_Final)
+
+# Going to make 2 categories of Price based on the summary results below
+summary(PRICE)
+
+# 4 Categories of Price
+Residential = rep("Property Price", length(PRICE_10K)) 
+Residential[PRICE_10K < 57.420] = "Reasonable"
+Residential[PRICE_10K >= 57.420] = "Expensive"
+table(Residential)   
+
+set.seed(100)
+n <- length(DC_Final$PRICE)
+training.set <- sample(n,n/2)
+# DC_Final.knn <- complete.cases(DC_train)
+train.dc <- DC_Final[training.set,]
+test.dc <- DC_Final[-training.set,]
+
+X.training = DC_train[, 3:13 ]                             
+X.testing = DC_test[, 3:13 ] 
+Y.training = Residential[training.set]
+Y.testing = Residential[-training.set]
+
+# It will not let me run my code - need help
+# Error in table(Y.testing, knn.result) : all arguments must have the same length
+
+knn.result = knn( X.training, X.testing, Y.training, 5 ) # k=5
+table( Y.testing, knn.result )
+mean( Y.testing == knn.result ) # correct classification rate with K=5
+
+class.rate = rep(0,100)
+for (K in 1:100) {
+  knn.result = knn( X.training, X.testing, Y.training, K )
+  class.rate[K]=mean( Y.testing == knn.result )
+}
+class.rate
+```
+
+### LDA Model
+
+```{r LDA}
+attach(DC_train)
+
+summary(PRICE_10K)
+Residential = rep("Property Price", length(PRICE_10K)) 
+Residential[PRICE_10K < 57.725] = "Reasonable"
+Residential[PRICE_10K >= 57.725] = "Expensive"
+table(Residential)   
+
+# lda(Residential ~ BATHRM + HF_BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION)
+
+# LDA without priors
+lda.fit = lda( Residential ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, CV=TRUE )
+table( Residential, lda.fit$class ) # The main diagonal shows correctly classified counts.
+mean( Residential == lda.fit$class ) # Correct classification rate = proportion of correctly 
+
+lda.fit.prior = lda( Residential ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, prior=c(0.55,0.45), CV=TRUE )
+table( Residential, lda.fit.prior$class ) # The main diagonal shows correctly classified counts.
+mean( Residential == lda.fit.prior$class ) # Correct classification rate = proportion of correctly 
+```
+
+### QDA Model
+
+```{r QDA}
+attach(DC_train)
+
+# QDA without priors
+qda.fit = qda( Residential ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION, CV=TRUE )
+table( Residential, qda.fit$class ) # The main diagonal shows correctly classified counts.
+mean( Residential == qda.fit$class ) # Correct classification rate = proportion of correctly 
+
+# QDA with priors
+qda.fit.prior = qda( Residential ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, prior=c(0.55, 0.45), CV=TRUE )
+table( Residential, qda.fit.prior$class ) # The main diagonal shows correctly classified counts.
+mean( Residential == qda.fit.prior$class ) # Correct classification rate = proportion of correctly 
+```
+
+### Ridge Regression using the Final Model
+
+```{r ridge}
+attach(DC_Final)
+rr = lm.ridge(PRICE_10K ~ poly(BATHRM, 8) + poly(ROOMS, 1) + poly(BEDRM, 8) + QUALIFIED + GRADE + poly(KITCHENS, 1) + poly(FIREPLACES, 4) + WARD + LATITUDE + LONGITUDE + poly(AYB.age, 4) + poly(EYB.age, 4) + poly(REMODEL.age, 4) + CONDITION*BATHRM, lambda=seq(0,1000,1) )
+plot(rr)
+
+# To choose a good lambda, fit ridge regression with various lambda and compare prediction performance.
+# select(rr)
+
+# So now we’ll look at a closer range.
+rr = lm.ridge(PRICE~., data=DC_train, lambda=seq(0,50,0.01) ) 
+# select(rr)
+plot(rr$lambda,rr$GCV)
+
+# Cross Validation
+
+X = model.matrix( PRICE_10K ~ poly(BATHRM, 8) + poly(ROOMS, 1) + poly(BEDRM, 8) + QUALIFIED + GRADE + poly(KITCHENS, 1) + poly(FIREPLACES, 4) + WARD + LATITUDE + LONGITUDE + poly(AYB.age, 4) + poly(EYB.age, 4) + poly(REMODEL.age, 4) + CONDITION*BATHRM, data=DC_Final )
+Y = PRICE_10K
+ridgereg = glmnet(X, Y, alpha=0, lambda = seq(0,10,0.01))
+
+cv_ridge = cv.glmnet(X,PRICE_10K,alpha=0,lambda=seq(0,10,0.01))
+
+plot(cv_ridge)
+
+cv_ridge$lambda.min
+# predict( ridgereg, cv_ridge$lambda.min, type= "coefficients" )
+
+plot(ridgereg)
+
+ridge = glmnet( X[Z,], PRICE_10K[Z], alpha=0, lambda=seq(0,10,0.01) )
+Yhat = predict( ridge, cv._ridge$lambda.min, newx=X[-Z,] )
+mean((Yhat - PRICE[-Z])^2) # This is the test MSE, estimated by the validation set approach.
+```
+
+### LASSO Regression using the Final Model
+
+```{r lasso}
+attach(DC_Final)
+X = model.matrix( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION, data=DC_Final )
+Y = PRICE_10K
+lasso = glmnet(X, Y, alpha=1, lambda = seq(0,10,0.01))
+
+plot(lasso)
+
+cv.lasso = cv.glmnet( X, PRICE_10K, alpha=1, lambda=seq(0,10,0.01) )
+
+plot(cv.lasso)
+
+cv.lasso$lambda.min
+# predict( lasso, cv.lasso$lambda.min, type= "coefficients" )
+
+lasso = glmnet( X[Z,], PRICE_10K[Z], alpha=1, lambda=seq(0,10,0.01) )
+Yhat = predict( lasso, cv.lasso$lambda.min, newx=X[-Z,] )
+mean((Yhat - PRICE[-Z])^2) # This is the test MSE, estimated by the validation set approach.
+```
+
+### PCR using the Final Model
+
+```{r pcr}
+pcr.fit = pcr( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION, data=DC_Final)
+summary(pcr.fit)
+
+X = model.matrix( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION, data=DC_Final )
+pc = princomp(X)
+summary(pc)
+
+screeplot(pc)
+prcomp(X)
+
+pcr.fit = pcr( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION, data=DC_Final, scale=TRUE )
+summary(pcr.fit)
+
+pcr.fit = pcr( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION, data=DC_Final, scale=TRUE, validation="CV" )
+summary(pcr.fit)
+validationplot(pcr.fit)
+```
+
+### PLS Using Best Variable Selection Model
+
+```{r pls}
+pls = plsr( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION, data=DC_Final, scale=TRUE, validation="CV" )
+summary(pls)
+validationplot(pls)
+```
+
+### Regression and Classification trees
+
+#### Classification Tree 
+
+```{r classification trees}
+attach(DC_Final)
+
+PRICE.CLASS = ifelse( PRICE_10K > median(PRICE_10K), "UnderPriced", "OverPriced" )
+PROP.DC = data.frame( DC_Final, PRICE.CLASS )
+table(PRICE.CLASS)
+
+(tree.prop1 = tree( PRICE.CLASS ~ QUALIFIED_2 + AC, data=PROP.DC))
+plot(tree.prop1, type="uniform")
+text(tree.prop1)
+summary(tree.prop1)
+
+tree.prop2 = tree( PRICE.CLASS ~ HEAT + AC + QUALIFIED_2 + GRADE + WARD + QUADRANT + CONDITION, data=PROP.DC )
+# plot(tree.prop2, type="uniform")
+# text(tree.prop2)
+summary(tree.prop2)
+
+## Cross Validation
+
+n = length(PRICE.CLASS); 
+Z = sample(n,n/2);
+tree.prop2 = tree( PRICE.CLASS ~ HEAT + AC + QUALIFIED_2 + GRADE + WARD + QUADRANT + CONDITION, data=PROP.DC[Z,] )
+prop.predict = predict(tree.prop2, PROP.DC, type = "class")
+table(prop.predict[-Z], PRICE.CLASS[-Z] )
+mean(prop.predict[-Z] == PRICE.CLASS[-Z] ) 
+
+## Pruning
+
+(cv.prune <- cv.tree( tree.prop2 ))
+plot(cv.prune)
+cv.prune.fun <- cv.tree( tree.prop2, FUN = prune.misclass ) # best=1 bc dev smallest at 1
+( tree.prop2.pruned = prune.misclass(tree.prop2, best=1 ) )
+```
+
+### Regression Tree
+
+```{r regression tree, cache=TRUE}
+attach(DC_Final)
+(tree.price = tree( PRICE ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age))
+plot(tree.price, type="uniform")
+text(tree.price)
+summary(tree.price)
+
+# Random Forests
+( rf = randomForest(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, data = DC_Final) ) # By default, m = p/3. But we can also choose our own m.
+
+plot(rf)
+importance(rf) # Measures reduction of the node’s impurity (diversity), if split by the given X-variable
+varImpPlot(rf, pch=16) # plot of importance(rf)
+
+# Cross-validation
+
+n <- length(DC_Final$PRICE_10K)
+Z <- sample(n,n/2) # made the dataset be 75% training and 25% testinf
+rf = randomForest(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, data = DC_Final, subset=Z)
+Yhat = predict(rf, newdata=DC_Final[-Z,])
+mean((Yhat - PRICE_10K[-Z])^2)
+# The mean-square error of prediction, estimated by the validation set cross-validation, is 7.686235
+```
+
+```{r, cache=TRUE}
+# There are 21 variables overall in the data set, 
+# 11 predictors. Let’s sample m = root of 11, rounded = 3 and 4.
+
+rf4 = randomForest(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, data=DC_Final, mtry=4)
+plot(rf4)
+
+# We would like to minimize the mean squared error and to maximize R2, the percent of total variation explained by the forest.
+which.min(rf4$mse)
+which.max(rf4$rsq)
+
+# need to sset rf4 to the mse output number
+
+# Alright, let’s use 147 trees whose results will get averaged in this random forest.
+(rf4.490 = randomForest(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, data=DC_Final, mtry=4, ntree=490) )
+```
+
+```{r bagging}
+# Bagging
+
+# This code takes a very long time to finish running. It took me at least 7 hours. So I have provided the code but I will not run it.
+
+cv.err = rep(0,6) 
+n.trees = rep(0,6)
+ 
+for (m in 1:7){
+  rf.m = randomForest( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES, data=DC_Final[Z,], mtry=m )
+  opt.trees = which.min(rf.m$mse)
+  rf.m = randomForest( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES, data=DC_Final[Z,], mtry=m, ntree=opt.trees )
+  Yhat = predict( rf.m, newdata=DC_Final[-Z,] )
+  mse = mean( (Yhat - PRICE_10K[-Z])^2 )
+  cv.err[m] = mse
+  n.trees[m] = opt.trees
+}
+which.min(cv.err)
+plot(cv.err)
+lines(cv.err)
+cv.err
+n.trees
+```
+
+```{r optimal random forest, cache=TRUE}
+# Optimal random forest model was created from the code above
+(rf.optimal = randomForest( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES, data=DC_Final, mtry=1, ntree=143 ) )
+```
+
+### Support Vector Machines
+
+```{r svm basic plot}
+attach(DC_Final)
+# Made 2 catgories so it would be easier to see 
+
+HOUSE = ifelse( PRICE_10K > 44.365, "Over", "Under" )
+Color = ifelse( PRICE_10K > 44.365, "blue", "red" )
+plot( ROOMS, STORIES, lwd=3, col=Color, main = "Rooms and Stories Basic SVM Plot")
+
+df.svm <- data.frame(HOUSE, ROOMS, STORIES)
+
+# The two classes cannot be separated by a hyperplane, but the SVM method is surely applicable.
+```
+
+```{r svm linear}
+attach(DC_Final)
+
+S.svm = svm( HOUSE ~ ROOMS + STORIES, data=df.svm, kernel="linear" )
+summary(S.svm)
+plot(S.svm, data=df.svm)
+
+Yhat = predict( S.svm, data.frame(DC_Final) )
+table( Yhat, HOUSE )
+mean( Yhat == HOUSE )
+```
+
+```{r svm polynomial}
+# This is the final classification with a linear kernel and therefore, a linear boundary. Support vectors are marked as “x”, other points as “o”. 
+# We can look at other types of kernels and boundaries – polynomial, radial, and sigmoid.
+
+S.svm = svm( HOUSE ~ ROOMS + STORIES, data=df.svm, kernel="polynomial" ) # polynomial kernels
+summary(S.svm)
+plot(S.svm, data=df.svm)
+
+Yhat = predict( S.svm, data.frame(DC_Final) )
+table( Yhat, HOUSE )
+mean( Yhat == HOUSE )
+```
+
+```{r svm radial}
+S.svm = svm( HOUSE ~ ROOMS + STORIES, data=df.svm, kernel="radial" ) # radials kernels
+summary(S.svm)
+plot(S.svm, data=df.svm)
+
+Yhat = predict( S.svm, data.frame(DC_Final) )
+table( Yhat, HOUSE )
+mean( Yhat == HOUSE )
+```
+
+```{r svm sigmoid}
+S.svm = svm( HOUSE ~ ROOMS + STORIES, data=df.svm, kernel="sigmoid" )# sigmoid kernels
+summary(S.svm)
+plot(S.svm, data=df.svm)
+
+Yhat = predict( S.svm, data.frame(DC_Final) )
+table( Yhat, HOUSE )
+mean( Yhat == HOUSE )
+```
+
+## Everything below takes too long to run. Also if one uses a laptop will run out of iterations, and fail to run. It should be noted that done of the code below was able to finish runnning because of time restrictions. At least wanted to show what I wished to attempt before handing in this project.
+
+#### Tuning and Cross Validation
+
+Everything below takes too long to run. Also if one uses a laptop will run out of iterations, and fail to run.\
+It should be noted that done of the code below was able to finish runnning because of time restrictions. At least wanted to show what I wished to attempt before handing in this project.
+
+```{r svm CV and tuning}
+# The “cost” option specifies the cost of violating the margin. We can try costs 0.001, 0.01, 0.1, 1, 10, 100, 1000:
+Stuned = tune( svm, HOUSE ~ ROOMS + STORIES, data=df.svm, kernel="linear", ranges=list(cost=10^seq(-3,3)) )
+
+summary(Stuned)
+# This smallest error will find best cost 
+# This cost yielded the lowest cross-validation error of classification.
+
+# We can also find the optimal kernel.
+
+Stuned = tune( svm, HOUSE ~ ROOMS + STORIES, data=df.svm, ranges=list(cost=10^seq(-3,3), kernel=c("linear","polynomial","radial","sigmoid")) )
+
+summary(Stuned)
+# The best kernel and cost.
+```
+
+```{r svm optimal}
+Soptimal = svm( HOUSE ~ ROOMS + STORIES, data=df.svm, cost=0.1, kernel="sigmoid" )
+
+summary(Soptimal)
+plot(Soptimal,data=d)
+# We know that more support vectors imply a lower variance
+
+# Let’s use the validation set method to estimate the classification rate of this optimal SVM.
+
+n = length(mpg)   
+Z = sample(n,n/2)
+Strain = svm( HOUSE ~ ROOMS + STORIES, data=df.svm, data=d[Z,], cost=0.1, kernel="sigmoid" )
+Yhat = predict( Strain, data=d[-Z,] )
+table( Yhat, ECO[Z] )
+mean( Yhat==ECO[Z] )
+```
+
+### 3. More than two classes
+
+```{r svm more classes}
+# Let’s create more categories of ECO. The same tool svm( ) can handle multiple classes.
+
+summary(PRICE_10K)
+
+HOUSE4 = rep("Price10K",n)
+HOUSE4[PRICE_10K < 24.150] = "Steal"
+HOUSE4[PRICE_10K < 44.365] = "Okay"
+HOUSE4[PRICE_10K < 75.150] = "Pricy"
+
+table(PROPERTY)
+
+df.svm2 = data.frame(HOUSE4, ROOMS, STORIES)
+
+S.svm4 = svm( HOUSE4 ~ ROOMS + STORIES, data=df.svm2, cost=0.1, kernel="sigmoid" )
+
+# R was trying to do regression SVM but realized that ECO4 is not numerical. We can direct R to do classification by replacing ECO4 with factor(ECO4).
+
+S.svm4 = svm( factor(HOUSE4) ~ ROOMS + STORIES, data=df.svm2, cost=0.1, kernel="sigmoid" )
+plot(S.svm4, data=df.svm2)
+
+Yhat = predict( S.svm4, data.frame(DC_Final) )
+table( Yhat, HOUSE4 )
+mean( Yhat == HOUSE4 )
+
+# It’s more difficult to predict finer classes correctly
+```
+
+### Final SVM 
+
+```{r final optiaml two classes svm 1}
+# We can also find the optimal kernel.
+
+HOUSE = ifelse( PRICE_10K > 44.365, "Under", "Over" )
+Color = ifelse( PRICE_10K > 44.365, "blue", "red" )
+
+df.svm2 <- data.frame(HOUSE, BATHRM, ROOMS, BEDRM, STORIES, KITCHENS, FIREPLACES, LATITUDE, LONGITUDE, AYB.age, EYB.age, REMODEL.age)
+
+Stuned = tune( svm, HOUSE ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, data=df.svm2, ranges=list(cost=10^seq(-3,3), kernel=c("linear","polynomial","radial","sigmoid")) )
+
+summary(Stuned)
+# The best kernel and cost.
+```
+
+```{r final optiaml two classes svm 2}
+Soptimal = svm( HOUSE ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, data=df.svm1, cost=0.1, kernel="sigmoid" )
+
+summary(Soptimal)
+plot(Soptimal,data=d)
+# We know that more support vectors imply a lower variance
+
+# Let’s use the validation set method to estimate the classification rate of this optimal SVM.
+
+n = length(mpg)   
+Z = sample(n,n/2)
+Strain = svm( HOUSE ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, data=df.svm1, data=d[Z,], cost=0.1, kernel="sigmoid" )
+Yhat = predict( Strain, data=d[-Z,] )
+table( Yhat, ECO[Z] )
+mean( Yhat==ECO[Z] )
+```
+
+```{r final optiaml svm with three classes svm}
+HOUSE4 = rep("Price10K",n)
+HOUSE4[PRICE_10K < 24.150] = "Steal"
+HOUSE4[PRICE_10K < 44.365] = "Okay"
+HOUSE4[PRICE_10K < 75.150] = "Pricy"
+
+table(PROPERTY)
+
+df.svm3 <- data.frame(HOUSE4, BATHRM, ROOMS, BEDRM, STORIES, KITCHENS, FIREPLACES, LATITUDE, LONGITUDE, AYB.age, EYB.age, REMODEL.age)
+
+# R was trying to do regression SVM but realized that ECO4 is not numerical. We can direct R to do classification by replacing ECO4 with factor(ECO4).
+
+S.svm4 = svm( HOUSE ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, data=df.svm3, ranges=list(cost=10^seq(-3,3), kernel=c("linear","polynomial","radial","sigmoid")) )
+plot(S.svm4, data=df.svm3)
+
+S.svm4.5 = svm( HOUSE ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, data=df.svm1, cost=0.1, kernel="sigmoid" )
+plot(S.svm4.5, data=df.svm3)
+
+Yhat = predict( S.svm4.5, data.frame(DC_Final) )
+table( Yhat, HOUSE4 )
+mean( Yhat == HOUSE4 )
+```
+
+
+
+

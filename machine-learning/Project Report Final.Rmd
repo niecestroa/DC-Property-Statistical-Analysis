@@ -1,0 +1,689 @@
+---
+title: "Stat 627 Project Report"
+author: "Aaron Niecestro"
+date: "Decmeber 5, 2019"
+output:
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, cache = TRUE)
+```
+
+### Packages
+
+```{r packages}
+library(tidyverse)
+library(broom)
+library(ggplot2)
+library(boot)
+library(scales)
+library(class)
+library(glmnet)
+library(leaps)
+library(car)
+library(MASS)
+library(tree)
+library(pls)
+library(randomForest) 
+library(e1071)
+```
+
+### Data
+
+Put data section in here
+
+### Raw Data
+
+```{r Raw Data}
+DC_Properties <- read.csv("~/Documents/STAT 627 Statistical Machine Learning/Stat 627 Project/Data/DC_Properties.csv")
+DC_Properties <- data.frame(DC_Properties) # making sure that this is data frame dataset
+```
+
+### Data Cleaning
+
+```{r Tidying Data}
+DC_Properties[is.na(DC_Properties)] <- 0 # setting all NA to 0 
+# makes data easier to clean and work with
+
+## Final Cleaned Dataset
+
+select <- dplyr::select
+
+DC_Properties_tidy <- DC_Properties %>%
+  select(PRICE, BATHRM, HF_BATHRM, HEAT, AC, ROOMS, BEDRM, AYB, YR_RMDL, EYB, STORIES, QUALIFIED, GRADE, CNDTN, KITCHENS, FIREPLACES, WARD, QUADRANT, LATITUDE, LONGITUDE) %>%
+  mutate(PRICE = as.numeric(PRICE),
+         BATHRM = as.numeric(BATHRM),
+         HF_BATHRM = as.numeric(HF_BATHRM),
+         ROOMS = as.numeric(ROOMS),
+         BEDRM = as.numeric(BEDRM),
+         AYB = as.numeric(AYB),
+         EYB = as.numeric(EYB),
+         STORIES = as.numeric(STORIES),
+         KITCHENS = as.numeric(KITCHENS),
+         FIREPLACES = as.numeric(FIREPLACES),
+         LATITUDE = as.numeric(LATITUDE),
+         LONGITUDE = as.numeric(LONGITUDE),
+         HEAT = as.character(HEAT), # made character columns here to filter and clean data better
+         AC = as.character(AC),
+         QUALIFIED = as.character(QUALIFIED),
+         GRADE = as.character(GRADE),
+         CNDTN = as.character(CNDTN)) %>%
+  filter(CNDTN != "",
+         CNDTN != "Default",
+         CNDTN != "Poor",
+         GRADE != " No Data",
+         GRADE != "",
+         HEAT != "No Data", # lose ~50,000 observations of the data by here
+         PRICE > 10000 & PRICE < 10000000,
+         FIREPLACES < 10,
+         KITCHENS <= 10,
+         ROOMS <= 40,
+         BEDRM <= 20,
+         STORIES <= 10,
+         LATITUDE != 0,
+         LONGITUDE != 0) %>% # Up to here, I lose roughly 100K observations
+  mutate(AYB.age = AYB, # making new quantitative
+         AYB.age = 2019 - AYB.age,
+         AYB.age = ifelse(AYB == 2019, 0, AYB.age),
+         EYB.age = as.numeric(EYB),
+         EYB.age = 2019 - EYB.age,
+         EYB.age = ifelse(EYB == 2019, 0, EYB.age),
+         REMODEL.age = as.character(YR_RMDL),
+         REMODEL.age = ifelse(REMODEL.age == "0", 0, REMODEL.age),
+         REMODEL.age = ifelse(REMODEL.age == "20", 0, REMODEL.age),
+         REMODEL.age = as.numeric(REMODEL.age),
+         REMODEL.age = 2019 - REMODEL.age,
+         REMODEL.age = ifelse(REMODEL.age == 2019, 0, REMODEL.age),
+         GRADE = ifelse(GRADE == "Exceptional-A", "Exceptional", GRADE), # fixing Grade
+         GRADE = ifelse(GRADE == "Exceptional-B", "Exceptional", GRADE),
+         GRADE = ifelse(GRADE == "Exceptional-C", "Exceptional", GRADE),
+         GRADE = ifelse(GRADE == "Exceptional-D", "Exceptional", GRADE),
+         QUALIFIED_2 = QUALIFIED, # making new Qualified Variable
+         QUALIFIED_2 = ifelse(QUALIFIED == "Q", 1, 0),
+         QUALIFIED_2 = as.factor(QUALIFIED_2),
+         AC = ifelse(AC == "0", "N", AC),
+         GRADE = as.factor(GRADE), # fixed certain variables back to factors
+         HEAT = as.factor(HEAT), 
+         AC = as.factor(AC),
+         WARD = as.factor(WARD),
+         CONDITION = as.factor(CNDTN),
+         QUALIFIED = as.factor(QUALIFIED),
+         AYB.age = as.numeric(AYB.age),
+         EYB.age = as.numeric(EYB.age),
+         REMODEL.age = as.numeric(REMODEL.age))%>%
+  select(-CNDTN, -AYB, -YR_RMDL, -EYB) # select again 
+
+DC_Final <- na.omit(DC_Properties_tidy)
+
+DC_Final <- DC_Final %>%
+  filter(AYB.age < 2000) %>%
+  mutate(PRICE_10K = PRICE/10000,
+         BATHRM = BATHRM + HF_BATHRM*.5,
+         BATHRM = as.numeric(BATHRM)) %>%
+  select(PRICE, PRICE_10K, BATHRM, ROOMS, BEDRM, STORIES, KITCHENS, FIREPLACES, LATITUDE,
+         LONGITUDE, AYB.age, EYB.age, REMODEL.age, HEAT, AC, QUALIFIED, QUALIFIED_2, GRADE, WARD,
+         QUADRANT, CONDITION)
+
+set.seed(10000000)
+
+# I needed even numbered data observations to use some of our techniques
+# So I made a random sample of even number of observations 
+DC_Final <- sample_n(DC_Final, 57610, replace = TRUE) # want the datasets to be even 
+# I lost one observation by doing this
+dim(DC_Final)
+summary(DC_Final)
+
+## random case number
+
+n <- length(DC_Final$PRICE_10K)
+Z <- sample(n,n/2)
+
+DC_train <- DC_Final[Z,] # training data set
+DC_test <- DC_Final[-Z,] # testing data set
+
+# kitchens needs NA switched to 0
+# stories has a lot of NAs = 52305, so used mutate NA or "" to 0
+# Price also has a lot of NA = 60741, so used mutate NA to 0
+
+attach(DC_train)
+```
+
+### Basic Diagnostics
+
+```{r diagnostics, eval=FALSE}
+attach(DC_Final)
+qqnorm(BATHRM)
+qqline(BATHRM)
+qqnorm(ROOMS)
+qqline(ROOMS)
+qqnorm(BEDRM)
+qqline(BEDRM)
+qqnorm(STORIES)
+qqline(STORIES)
+qqnorm(KITCHENS)
+qqline(KITCHENS)
+qqnorm(FIREPLACES)
+qqline(FIREPLACES)
+qqnorm(AYB.age)
+qqline(AYB.age)
+qqnorm(EYB.age)
+qqline(EYB.age)
+qqnorm(REMODEL.age)
+qqline(REMODEL.age)
+hist(BATHRM)
+hist(ROOMS)
+hist(BEDRM)
+hist(STORIES)
+hist(KITCHENS)
+hist(FIREPLACES)
+hist(AYB.age)
+hist(EYB.age)
+hist(REMODEL.age)
+detach(DC_Final)
+```
+
+### Partial F-tests
+
+```{r}
+attach(DC_train)
+# Full Model
+reg_full <- lm(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION)
+
+# Reduced Model
+reg_reduced <- lm(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age)
+
+# Anova
+anova(reg_full, reg_reduced)
+```
+
+H0: $Beta_{Condition}$ = 0, HA: $Beta_{Condition}$ not = 0\
+Since the p-value = 2.2e-16 which is less than 0.05, then we can reject the null hypothesis. So we can get the condition variables in the Model.
+
+### Variable Selection using regsubsets with Graphs
+
+```{r Variable Selection, eval=FALSE}
+attach(DC_train)
+
+null <- lm( PRICE ~ 1, DC_train )
+full <- lm( PRICE ~ ., data = DC_train)
+
+# Backwards Selection
+# step( full, scope=list(lower=null, upper=full), direction="backward" )
+
+reg.backward <- regsubsets( PRICE ~ ., data=DC_train, method = "backward" )
+plot(reg.backward, scale = "r2" )
+
+# # Forward Selection
+reg.forward <- regsubsets( PRICE ~ ., data=DC_train, method = "forward" )
+plot(reg.forward, scale = "r2" )
+
+# step( null, scope=list(lower=null, upper=full), direction="forward" )
+```
+
+#### Stepwise AIC & BIC
+
+```{r AIC without interaction, eval=FALSE}
+attach(DC_train)
+## Stepwise AIC
+
+model.all <- lm(PRICE ~ BATHRM + HEAT + AC + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + QUADRANT + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + QUALIFIED_2 + CONDITION)
+
+step(model.all, direction="both")
+
+# Model Output from AIC
+model_aic <- lm(PRICE ~ BATHRM + HEAT + AC + ROOMS + 
+    BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + 
+    WARD + QUADRANT + LATITUDE + LONGITUDE + AYB.age + EYB.age + 
+    REMODEL.age + CONDITION)
+summary(model_aic)
+# AIC = 744905.4, Huge AIC, but smallest when compare models
+
+## Stepwise BIC
+
+sampsize <- length(model.all$fitted)
+step(model.all, direction="both", k=log(sampsize))
+
+# Model Created from BIC Results is below
+
+model_bic <- lm(PRICE ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION)
+summary(model_bic)
+# AIC=744905.4, BIC = 32182
+
+# tested further to see what could be eliminated using AIC and BIC
+# got rid of STYLE - messing with model approaches, also too many dummy variables
+```
+
+### Variable Selection Best Model
+
+The code used to get the Variable Selection Best Model is at the end of the document in the Appedix of Used Project Code.
+
+```{r}
+attach(DC_train)
+final_model <- lm(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION)
+summary(final_model)
+```
+
+This model is good but could be better. It seems that all variable are statistically significant except for one. The not statistically significant variable is Grade= Good Quality. We have an adjusted $R^2$ of 64.99% so we can try to create something better.
+
+### Some Polynomial Code used to get final model
+
+```{r polynomial code}
+attach(DC_train)
+# Numerical Variables
+# BATHRM + HF_BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION
+
+polynomial.fit2 = regsubsets( PRICE~ poly(AYB.age, 6), data=DC_Final ) # put to 8th power
+which.max(summary(polynomial.fit2)$adjr2) # tells me to use a powert of 5
+which.min(summary(polynomial.fit2)$cp) # tells me to use a powert of 5
+which.min(summary(polynomial.fit2)$bic) # tells me to use a powert of 3
+detach(DC_train)
+
+attach(DC_Final)
+
+# some plots I used to since what transformation to use
+par(mfrow=c(2,2))
+plot(BATHRM, PRICE, main = "Price & Bathrooms")
+reg = lm(PRICE ~ BATHRM )
+abline(reg)
+plot( BATHRM, residuals(reg), main = "Bathroom Residual Plot")
+
+plot(STORIES, PRICE, main = "Price & Stories")
+reg = lm(PRICE ~ ROOMS)
+abline(reg)
+plot( ROOMS, residuals(reg), main = "Rooms Residual Plot")
+
+detach(DC_Final)
+```
+
+We can see that the plots above don't have residuals that are normally distributed. We can try to look for powers and other transformations. We can see that for AYB.age is 6 for a maximum adjusted R^2. The power for minimum cp for AYB.age is 5. The power for the minimum bic is 3.
+
+### Final Model with Machine Learning Techniques
+
+```{r real final model}
+attach(DC_train)
+# Use this model below as your final model
+final_model.all <- lm(PRICE_10K ~ poly(BATHRM, 8) + poly(ROOMS, 1) + poly(BEDRM, 8) + QUALIFIED + GRADE + poly(KITCHENS, 1) + poly(FIREPLACES, 4) + WARD + LATITUDE + LONGITUDE + poly(AYB.age, 4) + poly(EYB.age, 4) + poly(REMODEL.age, 4) + CONDITION*BATHRM) # Adjusted R2 = 0.6958 
+summary(final_model.all)
+
+# Adjusted R2 = 0.6917
+```
+
+It seems that BATHRM is repeated twice in the this model, once in poly(BATHRM, 8)1 and once in BATHRM, so it makes sense that the second BATHRM is NA. Our adjusted R^2 is 0.6917. The variables that are not statistically significant is Bedroom^4, Bedroom^8, Fireplaces^3, Condition=Fair, Condition=Good, and the interaction term of Condition=Good and Bathroom. The Adjusted R^2 is 69.17%. I would say that this is a good model since the residual standard error is low, the adjusted R^2 is high, and most of the variables are statistically significant. Although I would of liked a R^2 that was greater than 90%, I will take what I can get.
+
+### Final Model Regression Diagnostics
+
+```{r Regression Diagnostics, cache=TRUE}
+attach(DC_Final)
+
+# Basic Diagnostic Plot
+par(mfrow=c(2,2))
+plot(final_model.all) # plot of the final machine learning model
+
+# STUDENTIZED RESIDUALS AND OUTLIERS
+
+t = rstudent(final_model.all) # studentized residual t
+plot(t) # plot of studentized residual t
+t[ abs(t) > 46 ] # p=47, so use p-1 =46
+
+qt( 0.05/2/28827, 28800 ) # alpha/2/dim(Final_T[1], dim(Final_T[1]-p-1 ), need to change since dimenstion have changed
+t[ abs(t) > abs(qt( 0.05/2/28827, 28800)) ] # need to change since dimenstion have changed
+
+# Testing Normality
+# shapiro.test(t) 
+# unable to use since sample size > 5000
+
+# INFLUENTIAL DATA
+
+outlierTest(final_model.all) # outlier test
+cook = cooks.distance(final_model.all) # cook's distance 
+plot(cook) # cook's distance plot
+# influence.measures(final_model.all)
+
+# VARIANCE INFLATION FACTORS
+vif(final_model)
+```
+
+In the first plot (Residuals vs Fitted) we can see that we have outliers and the the residuals are like a side cone shape. In the second plot (Normal Q-Q), we can see that the our model is not normally distributed at the tails and that we have outliers. In the third plot (Scale Location), we can see that we have the outliers repeating here as well, and that we do not have homoscedacity. In the fourth plot (Residuals vs Leverage), we can see that we definitely have outliers like the earlier plots show and nd that we do not have homoscedacity. In the t plot we can see that the studentized residuals are constant around 0 with some outliers above and below, but most of the residuals are between -5 and 5 in the y-axis t. IN the cook distance plot most the residuals are below 0.05 except for one point, which I assume to be an outlier.\
+I can see that the results of the variance inflation factor that I do not have multicollinearity among my predcitors but it is something to look out for.
+
+### KNN 
+
+It should be noted now that this is only one of many ways I used KNN in my analysis project. I also used for the categories below K =10, K=20, and K=1000 along with a few others K's.\
+I also used KNN with 3 categoreis based off of the 1st quartile, mean, and 3rd quartile and tried K =10, K=20, and K=1000 along with a few others K's before attempting the KNN for loop for k=1 to k=100. I did not submit the code based on the instructions of the project.
+
+```{r Price KNN, cache = TRUE}
+# Property Price KNN
+
+attach(DC_Final)
+
+# Going to make 2 categories of Price based on the summary results below
+summary(PRICE_10K)
+
+# 2 Categories of Price
+Residential = rep("Property Price", length(PRICE_10K)) 
+Residential[PRICE_10K < 57.420] = "Reasonable"
+Residential[PRICE_10K >= 57.420] = "Expensive"
+table(Residential)  # table of number of observations in both categories
+
+set.seed(100)
+n <- length(DC_Final$PRICE) # setting training and testing datasets again
+training.set <- sample(n,n/2)
+# DC_Final.knn <- complete.cases(DC_train)
+train.dc <- DC_Final[training.set,] # training knn set
+test.dc <- DC_Final[-training.set,] # testing knn set
+
+X.training = DC_train[, 2:13 ] # using only numerical variables in training set   
+X.testing = DC_test[, 2:13 ] 
+Y.training = Residential[training.set]
+Y.testing = Residential[-training.set]
+
+knn.result = knn( X.training, X.testing, Y.training, 5 ) # k=5
+table( Y.testing, knn.result ) # table of Testing set Response Variable and knn.results
+mean( Y.testing == knn.result ) # correct classification rate with K=5
+
+class.rate = rep(0,100)
+for (K in 1:100) {
+  knn.result = knn( X.training, X.testing, Y.training, K )
+  class.rate[K]=mean( Y.testing == knn.result )
+}
+class.rate # class rate observations
+which.min(class.rate) # min correct classification rate from for lopp
+```
+
+The two categories are based off the a value close to the mean of PRICE_10K. When the PRICE_10K < 57.420 it is labeled as Reasonable, and PRICE_10K > 57.420 is labeled as expensive. The KNN mean squared error for k=5 is 0.5427877. We can se that the minimum class rate for the KNN for loop for K from 1 to 100 is K=1. The mean squared error for k=1 form the KNN for loop is 0.5251866. It seems that the mean squared error fluctuates up and down as K increases but overall the mean squared error goes up as K increases.
+
+### LDA Model
+
+```{r LDA}
+attach(DC_train)
+
+summary(PRICE_10K)
+# 2 Categories of Price
+# Made 2 catgories so it would be easier to see 
+Residential = rep("Property Price", length(PRICE_10K)) 
+Residential[PRICE_10K < 57.725] = "Reasonable"
+Residential[PRICE_10K >= 57.725] = "Expensive"
+table(Residential)   
+
+# below is the lda fit without priors and cross validation
+# takes too many pages to show so commented it out
+# lda(Residential ~ BATHRM + HF_BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION)
+
+# LDA without priors and with cross-validation
+lda.fit = lda( Residential ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, CV=TRUE ) # cross validation lda fit
+table( Residential, lda.fit$class ) # The main diagonal shows correctly classified counts.
+mean( Residential == lda.fit$class ) # Correct classification rate = proportion of correctly 
+
+# Lda with priors and with cross-validation
+lda.fit.prior = lda( Residential ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, prior=c(0.55,0.45), CV=TRUE )
+table( Residential, lda.fit.prior$class ) # The main diagonal shows correctly classified counts.
+mean( Residential == lda.fit.prior$class ) # Correct classification rate = proportion of correctly 
+
+summary(lda.fit.prior) # summary of lda fit model with priors and cross validations
+```
+
+The two categories are based off the a value close to the mean of PRICE_10K. When the PRICE_10K < 57.725, it is labeled as Reasonable, and PRICE_10K > 57.725, it is labeled as expensive. My results show me that LDA without priors correct classification rate is 0.8065961. My results show me that LDA with priors correct classification rate is 0.8010762. It seems taht with priors has slightly lowered the correct classification rate.
+
+### QDA Model
+
+```{r QDA}
+attach(DC_train)
+
+# QDA without priors
+qda.fit = qda( Residential ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION, CV=TRUE )
+table( Residential, qda.fit$class ) # The main diagonal shows correctly classified counts.
+mean( Residential == qda.fit$class ) # Correct classification rate = proportion of correctly 
+
+# QDA with priors
+qda.fit.prior = qda( Residential ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, prior=c(0.55, 0.45), CV=TRUE )
+table( Residential, qda.fit.prior$class ) # The main diagonal shows correctly classified counts.
+mean( Residential == qda.fit.prior$class ) # Correct classification rate = proportion of correctly 
+```
+
+The two categories are based off the a value close to the mean of PRICE_10K. When the PRICE_10K < 57.725it is labeled as Reasonable, and PRICE_10K > 57.725 is labeled as expensive. My results show me that QDA without priors correct classification rate is 0.8026037. My results show me that QDA with priors correct classification rate is 0.7928485. It seems taht with priors has slightly lowered the correct classification rate.
+
+### Ridge Regression using the Final Model
+
+```{r ridge}
+attach(DC_Final)
+rr = lm.ridge(PRICE_10K ~ poly(BATHRM, 8) + poly(ROOMS, 1) + poly(BEDRM, 8) + QUALIFIED + GRADE + poly(KITCHENS, 1) + poly(FIREPLACES, 4) + WARD + LATITUDE + LONGITUDE + poly(AYB.age, 4) + poly(EYB.age, 4) + poly(REMODEL.age, 4) + CONDITION*BATHRM, lambda=seq(0,1000,1) )
+# plot(rr)
+
+# To choose a good lambda, fit ridge regression with various lambda and compare prediction performance.
+# select(rr)
+
+# So now we’ll look at a closer range.
+rr = lm.ridge(PRICE_10K ~ poly(BATHRM, 8) + poly(ROOMS, 1) + poly(BEDRM, 8) + QUALIFIED + GRADE + poly(KITCHENS, 1) + poly(FIREPLACES, 4) + WARD + LATITUDE + LONGITUDE + poly(AYB.age, 4) + poly(EYB.age, 4) + poly(REMODEL.age, 4) + CONDITION*BATHRM, data=DC_train, lambda=seq(0,50,0.01) ) 
+# select(rr)
+# plot(rr$lambda,rr$GCV)
+
+# Cross Validation
+
+X = model.matrix( PRICE_10K ~ poly(BATHRM, 8) + poly(ROOMS, 1) + poly(BEDRM, 8) + QUALIFIED + GRADE + poly(KITCHENS, 1) + poly(FIREPLACES, 4) + WARD + LATITUDE + LONGITUDE + poly(AYB.age, 4) + poly(EYB.age, 4) + poly(REMODEL.age, 4) + CONDITION*BATHRM, data=DC_Final )
+Y = PRICE_10K
+ridgereg = glmnet(X, Y, alpha=0, lambda = seq(0,10,0.01))
+
+# Cross Validation for Ridge
+cv_ridge = cv.glmnet(X,PRICE_10K,alpha=0,lambda=seq(0,10,0.01))
+
+plot(cv_ridge) # plot of rigdge cross validation
+
+cv_ridge$lambda.min # minimum lambda
+# predict( ridgereg, cv_ridge$lambda.min, type= "coefficients" )
+# this was many pages 
+# I did not think you wanted to see the many pages of this output
+
+plot(ridgereg) # plot of ridge regression
+```
+
+IT seems that for the log(lambda) plot that the mean squared error increases as the log(lambda) increases. The minimum cross validation lambda is 0. So it seems that ridge regression based off my the minimum cross validation lambda would like most of the variables to go to 0. The L1 norm plot is very interesting. We can see that as the L1 Norm decreases and the Coefficients get closer to 0, rigdge regression will try to get a lot of the predictors variables to 0. Some predcitors will get to close to 0 much faster than other as we can see form the light blue, light gree and pink outer lines. Very colorful graph
+
+### LASSO Regression using the Final Model
+
+```{r lasso}
+attach(DC_Final)
+X = model.matrix( PRICE_10K ~ poly(BATHRM, 8) + poly(ROOMS, 1) + poly(BEDRM, 8) + QUALIFIED + GRADE + poly(KITCHENS, 1) + poly(FIREPLACES, 4) + WARD + LATITUDE + LONGITUDE + poly(AYB.age, 4) + poly(EYB.age, 4) + poly(REMODEL.age, 4) + CONDITION*BATHRM, data=DC_Final )
+Y = PRICE_10K
+lasso = glmnet(X, Y, alpha=1, lambda = seq(0,10,0.01))
+
+plot(lasso)
+
+# Cross Validation for LASSO
+cv.lasso = cv.glmnet( X, PRICE_10K, alpha=1, lambda=seq(0,10,0.01) )
+
+plot(cv.lasso) # plot of cross validation for lasso
+
+cv.lasso$lambda.min
+# predict( lasso, cv.lasso$lambda.min, type= "coefficients" )
+
+lasso = glmnet( X[Z,], PRICE_10K[Z], alpha=1, lambda=seq(0,10,0.01) )
+Yhat = predict( lasso, cv.lasso$lambda.min, newx=X[-Z,] )
+mean((Yhat - PRICE[-Z])^2) # This is the test MSE, estimated by the validation set approach.
+```
+
+The first plot for lasso interesting. It seems that as the L1 Norm decreases and the Coefficients get closer to 0, the coefficients will try to get to 0. However it is really interesting that some of the lines in the L1 norm go up and then decrease right before the L1 Norm. It seems that as the mean-squared error increases as the log(lambda) increases, but unlike with ridge regression the standard deviavation (gray lines from red dots) is a lot smaller. The minimum cross validation lambda is 0. The lasso the test mean squared error, estimated by the validation set approach is 635678383588, which is very large, considering how big the model this does make some sense.
+
+### PCR using Variable Selection Best Model
+
+```{r pcr}
+pcr.fit = pcr( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION, data=DC_Final)
+# summary(pcr.fit)
+
+X = model.matrix( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION, data=DC_Final )
+pc = princomp(X)
+summary(pc) # summary of principle compenent
+
+screeplot(pc)
+prcomp(X)
+
+pcr.fit = pcr( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION, data=DC_Final, scale=TRUE )
+# summary(pcr.fit)
+
+pcr.fit = pcr( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION, data=DC_Final, scale=TRUE, validation="CV" )
+summary(pcr.fit)
+validationplot(pcr.fit)
+```
+
+It seems as the number of compoenents increase the Cross validation and adjusted cross validation decreases. The smallest Cross validation and adjusted cross validation is at 29 compoenents and stays that way unitl the last 31st compoenent. We can see the in pc plot that by the second compoenent the variance decreases by five times, and by the 5th computation we cn see that the variance is very small and does not change much. In the second plot of RMSEP and number of compoenents, it seems that by the 27th component the RMSEP does not decrease too much, or at least what I can see.
+
+### PLS Using Best Variable Selection Model
+
+```{r pls}
+pls = plsr( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + QUALIFIED + GRADE + KITCHENS + FIREPLACES + WARD + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age + CONDITION, data=DC_Final, scale=TRUE, validation="CV" ) # pls model with scale and cross validation
+summary(pls) # summary of the pls model
+validationplot(pls) # validation plot
+```
+
+It seems as the number of compoenents increase the Cross validation and adjusted cross validation decreases. The smallest Cross validation and adjusted cross validation is at 29 compoenents and stays that way unitl the last 31st compoenent. A lot mor eof the variance is explined as the number of components increase the the training dataset. The largest variance explained in the training dataset is at the 31st component with X having 102.3 variance explained, and Price_10K having 63.0 variance explained. In the plot of RMSEP and number of compoenents, it seems that by the 3rd component the RMSEP does not decrease anymore, or at least what I can see. It is interesting that at the 30th component the black line for RMSEP increases and the red dotted line also increases but a less than the black line. 
+
+### Regression and Classification trees
+
+#### Classification Tree 
+
+```{r classification trees}
+attach(DC_Final)
+
+PRICE.CLASS = ifelse( PRICE_10K > median(PRICE_10K), "UnderPriced", "OverPriced" )
+PROP.DC = data.frame( DC_Final, PRICE.CLASS )
+table(PRICE.CLASS)
+
+tree.prop = tree( PRICE.CLASS ~ HEAT + AC + QUALIFIED_2 + GRADE + WARD + QUADRANT + CONDITION, data=PROP.DC)
+plot(tree.prop)
+text(tree.prop)
+summary(tree.prop)
+
+## Cross Validation
+
+n = length(PRICE.CLASS); 
+Z = sample(n,n/2); # setting training and testing set
+tree.prop2 = tree( PRICE.CLASS ~ HEAT + AC + QUALIFIED_2 + GRADE + WARD + QUADRANT + CONDITION, data=PROP.DC[Z,] )
+prop.predict = predict(tree.prop2, PROP.DC, type = "class")
+table(prop.predict[-Z], PRICE.CLASS[-Z] ) # Table of testing data
+mean( prop.predict[-Z] == PRICE.CLASS[-Z] )# Predicted MSE
+
+## Pruning
+
+( cv.prune <- cv.tree(tree.prop2) ) # cross validation of pruning
+plot(cv.prune) # plot of pruned tree
+cv.prune.fun <- cv.tree( tree.prop2, FUN = prune.misclass ) # best=1 bc dev smallest at 1
+
+# The code below takes up at least 300 pages when it knits, I believe that you did not want to see it, so I did not show how it ran - Aaron
+tree.prop2.pruned = prune.misclass(tree.prop2, best=1 ) 
+```
+
+The pricing categories (OverPriced, and UnderPriced) were broken up with approxmiately 50% of the data being in each category, which was what I was looking for. It is not broken up perfectly but it is close enought that the pricing category spilt is about 50% in each category. In the first tree plot for tree.prop2, we can see that ward is less than 4 (hi) that the price of a property will be overpriced. The good news from this tree is that all the nodes either have overpriced, or underpriced, but not both The predicted MSE is 0.7998611. One can see in the plot of the pruned tree that the deviance is the lowest at size =6. After using cross validation and pruning for the classification tree above, I found the best tree to just have a single node. 
+
+### Regression Tree
+
+```{r regression tree, cache=TRUE}
+attach(DC_Final)
+(tree.price = tree( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age))
+plot(tree.price, type = "uniform") # plot of regression tree
+text(tree.price) # text for regression tree
+summary(tree.price) # summary of regression tree
+```
+
+In this tree regression tree plot we can see that we have 11 terminal nodes and the graph is a little messy. The graph is a little messy and crunched because of the long variable names. I am sorry about that but I do not know how to fix that at this time. The variables used in this plot were Longitude, Bathrooms, EYB.age, Fireplaces, AYB.age, and Latitude. I will not provide an exmaple of how this plots works. For exmaple, if the longitude as greater than -77.0391 and bathrooms were greater than 2.25, and AYB.age was greter than 95.5 then this tree predicts that the property will be worth 67.33 ten thousand dollars, or 673,300 dollars.
+
+```{r}
+# Random Forests
+rf = randomForest(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, data = DC_Final)  # By default, m = p/3. But we can also choose our own m.
+
+plot(rf)
+# importance(rf) # too many pages to show - Aaron
+# Measures reduction of the node’s impurity (diversity), if split by the given X-variable
+```
+
+In the random forest plot we can see that the error starts to slowly decrease and stay steady around 400 trees. Between 0 trees and 200 trees  the error does decrease a lot but afterwards between 200 trees and 400 trees it seems to decrease but at a much slower pace. I can not really see a difference between the tree sizes of 450 and 500.\
+
+```{r}
+importance(rf)
+varImpPlot(rf, pch=16) # plot of importance(rf)
+```
+
+The importance plot for the random forest model shows me that the most important variable in this model is Longitude followed by bathrooms with a small amount of difference. The least important variable is kitchens. It is interesting to note that from is the large gap between EYB.age and Bathroms, and EYB.age and Latitude. Before making tis plot I originally thought that longitude and latitude importance will we right next to one another but it seems from this plot that I was wrong in that assumption.\
+
+```{r}
+# Cross-validation
+
+n <- length(DC_Final$PRICE_10K)
+Z <- sample(n,n/2) # made the dataset be 50% training and 50% testinf
+rf = randomForest(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, data = DC_Final, subset=Z)
+Yhat = predict(rf, newdata=DC_Final[-Z,])
+mean((Yhat - PRICE_10K[-Z])^2)
+# The mean-square error of prediction, estimated by the validation set cross-validation
+```
+
+#### Random Forests
+
+```{r random forest mtry, eval= FALSE}
+# There are 21 variables overall in the data set, 
+# 11 predictors. Let’s sample m = root of 11, rounded = 3 and 4.
+
+rf4 = randomForest(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, data=DC_Final, mtry=4)
+plot(rf4)
+
+# We would like to minimize the mean squared error and to maximize R2, the percent of total variation explained by the forest.
+which.min(rf4$mse)
+which.max(rf4$rsq)
+
+# need to sset rf4 to the mse output number
+
+# Alright, let’s use 147 trees whose results will get averaged in this random forest.
+(rf4.490 = randomForest(PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES + LATITUDE + LONGITUDE + AYB.age + EYB.age + REMODEL.age, data=DC_Final, mtry=4, ntree=490) )
+plot(rf4.490)
+```
+
+The mean-square error of prediction, estimated by the validation set cross-validation is 678.1715, wich is very large but still smaller than the other prediction MSE before.\
+
+```{r bagging, eval=FALSE}
+## Bagging
+
+# This code takes a very long time to finish running. It took me at least 7 hours. So I have provided the code but I will not run it.
+
+cv.err = rep(0,6) 
+n.trees = rep(0,6)
+ 
+for (m in 1:6){
+  rf.m = randomForest( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES, data=DC_Final[Z,], mtry=m )
+  opt.trees = which.min(rf.m$mse)
+  rf.m = randomForest( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES, data=DC_Final[Z,], mtry=m, ntree=opt.trees )
+  Yhat = predict( rf.m, newdata=DC_Final[-Z,] )
+  mse = mean( (Yhat - PRICE_10K[-Z])^2 )
+  cv.err[m] = mse
+  n.trees[m] = opt.trees
+}
+which.min(cv.err)
+plot(cv.err)
+lines(cv.err)
+cv.err
+n.trees
+```
+
+Nothing to comment on about the for loop. I used the above for loop code to make the most optimal random forest model below.
+
+```{r optimal random forest, cache=TRUE}
+# Optimal random forest model was created from the for loop code above
+
+(rf.optimal = randomForest( PRICE_10K ~ BATHRM + ROOMS + BEDRM + STORIES + KITCHENS + FIREPLACES, data=DC_Final, mtry=1, ntree=143 ) )
+```
+
+The most optimal random forest model has the mtry equal to 1 and the number of trees equal to 143. Need to comment if this model happened to reduce to bagging and about the output of it, especially variance explained
+
+```{r}
+importance(rf.optimal)
+varImpPlot(rf.optimal, pch=16)
+```
+
+need to comment here
+
+### Support Vector Machines
+
+```{r}
+
+```
+
+### Conclusion
+
+I can conclude 
